@@ -1,19 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts'
-import { getCalendar, getRecentEarnings, getEarningsTrends } from '../api/index'
-
-const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+import { getCalendar, getRecentEarnings, getEarningsTrends, triggerPostBrief } from '../api/index'
 
 // ---------------------------------------------------------------------------
-// Shared badge / display helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
 function BeatMissBadge({ value }) {
-  if (!value) return <span className="text-gray-400 text-xs">—</span>
+  if (!value) return <span className="text-gray-300 text-xs">—</span>
   const styles = {
-    beat: 'bg-emerald-100 text-emerald-700 border border-emerald-200',
-    miss: 'bg-red-100 text-red-700 border border-red-200',
+    beat:    'bg-emerald-100 text-emerald-700 border border-emerald-200',
+    miss:    'bg-red-100 text-red-700 border border-red-200',
     in_line: 'bg-amber-100 text-amber-700 border border-amber-200',
   }
   const labels = { beat: 'Beat', miss: 'Miss', in_line: 'In Line' }
@@ -27,85 +24,94 @@ function BeatMissBadge({ value }) {
 function GuidanceBadge({ value }) {
   if (!value) return null
   const styles = {
-    raised: 'text-emerald-600 bg-emerald-50 border-emerald-200',
+    raised:     'text-emerald-600 bg-emerald-50 border-emerald-200',
     maintained: 'text-gray-600 bg-gray-50 border-gray-200',
-    lowered: 'text-red-600 bg-red-50 border-red-200',
-    withdrawn: 'text-amber-600 bg-amber-50 border-amber-200',
+    lowered:    'text-red-600 bg-red-50 border-red-200',
+    withdrawn:  'text-amber-600 bg-amber-50 border-amber-200',
   }
   const icons = { raised: '↑', maintained: '→', lowered: '↓', withdrawn: '⚠' }
-  const label = value.charAt(0).toUpperCase() + value.slice(1)
   return (
     <span className={`px-2 py-0.5 rounded border text-xs font-medium ${styles[value] || 'text-gray-600 bg-gray-50 border-gray-200'}`}>
-      {icons[value]} {label}
+      {icons[value]} {value.charAt(0).toUpperCase() + value.slice(1)}
     </span>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Mini sparkline (Recharts)
-// ---------------------------------------------------------------------------
+function fmtRevenue(v) {
+  if (v == null) return null
+  return v >= 1000 ? `€${(v / 1000).toFixed(1)}bn` : `€${Math.round(v)}m`
+}
 
-function RevenueSparkline({ data }) {
-  if (!data || data.length < 2) return <span className="text-gray-300 text-xs">—</span>
-  const points = data.filter((d) => d.revenue != null)
-  if (points.length < 2) return <span className="text-gray-300 text-xs">—</span>
+function fmtDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
 
-  const first = points[0].revenue
-  const last = points[points.length - 1].revenue
-  const color = last >= first ? '#10b981' : '#ef4444'
-
-  return (
-    <ResponsiveContainer width={72} height={28}>
-      <LineChart data={points} margin={{ top: 2, bottom: 2, left: 0, right: 0 }}>
-        <Line
-          type="monotone"
-          dataKey="revenue"
-          stroke={color}
-          strokeWidth={1.5}
-          dot={false}
-          isAnimationActive={false}
-        />
-        <Tooltip
-          formatter={(v) => [`€${(v / 1000).toFixed(1)}bn`, 'Rev']}
-          labelFormatter={(_, payload) => payload?.[0]?.payload?.fiscal_period || ''}
-          contentStyle={{ fontSize: 10, padding: '2px 6px' }}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  )
+function dayLabel(iso) {
+  const d = new Date(iso)
+  const today = new Date()
+  const diff = Math.round((d - today) / 86400000)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
 // ---------------------------------------------------------------------------
-// Reporting Today strip
+// Needs Attention
 // ---------------------------------------------------------------------------
 
-function ReportingTodayStrip({ entries }) {
-  const todayKey = new Date().toISOString().split('T')[0]
-  const today = entries.filter((e) => e.report_date === todayKey)
-  if (today.length === 0) return null
+function NeedsAttention({ recent, onBriefGenerated }) {
+  const [generating, setGenerating] = useState({})
+
+  const items = recent.filter((e) => {
+    const hasActuals = e.revenue_actual != null || e.eps_actual != null
+    const pb = e.post_brief || {}
+    const hasBrief = pb.post_brief != null
+    return hasActuals && !hasBrief
+  })
+
+  if (!items.length) return null
+
+  const generate = async (ticker) => {
+    setGenerating((g) => ({ ...g, [ticker]: true }))
+    try {
+      await triggerPostBrief(ticker)
+      onBriefGenerated()
+    } catch {}
+    setGenerating((g) => ({ ...g, [ticker]: false }))
+  }
 
   return (
-    <div className="mb-2 bg-blue-50 border border-blue-200 rounded-xl p-4">
+    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
-        <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-        <span className="text-sm font-semibold text-blue-800">Reporting Today</span>
-        <span className="text-xs text-blue-500">({today.length} compan{today.length === 1 ? 'y' : 'ies'})</span>
+        <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+        <span className="text-sm font-semibold text-amber-800">
+          Needs Brief · {items.length} {items.length === 1 ? 'report' : 'reports'} with actuals but no brief yet
+        </span>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {today.map((e) => (
-          <Link
-            key={e.ticker}
-            to={`/companies/${e.ticker}`}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-white ${
-              e.is_watchlist
-                ? 'bg-blue-100 border-blue-300 text-blue-800'
-                : 'bg-white border-blue-200 text-blue-700'
-            }`}
-          >
-            <span className="font-bold">{e.ticker}</span>
-            {e.company_name && <span className="text-xs text-blue-500 hidden sm:inline">{e.company_name}</span>}
-            {e.is_watchlist && <span className="text-blue-400">★</span>}
-          </Link>
+      <div className="space-y-2">
+        {items.map((e) => (
+          <div key={e.id} className="flex items-center justify-between gap-3 bg-white rounded-lg px-3 py-2 border border-amber-100">
+            <div className="flex items-center gap-2 min-w-0">
+              <Link to={`/companies/${e.ticker}`} className="font-bold text-gray-800 hover:text-blue-600 text-sm shrink-0">
+                {e.ticker}
+              </Link>
+              <span className="text-xs text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">{e.fiscal_period}</span>
+              {fmtRevenue(e.revenue_actual) && (
+                <span className="text-xs text-gray-500 hidden sm:inline">{fmtRevenue(e.revenue_actual)} rev</span>
+              )}
+            </div>
+            <button
+              onClick={() => generate(e.ticker)}
+              disabled={generating[e.ticker]}
+              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              {generating[e.ticker] ? 'Generating…' : 'Generate Brief →'}
+            </button>
+          </div>
         ))}
       </div>
     </div>
@@ -113,10 +119,62 @@ function ReportingTodayStrip({ entries }) {
 }
 
 // ---------------------------------------------------------------------------
-// Rich earnings feed card
+// Upcoming calendar — compact date-grouped list
 // ---------------------------------------------------------------------------
 
-function EarningsCard({ entry, trend }) {
+function UpcomingCalendar({ calendar }) {
+  const today = new Date()
+  const todayKey = today.toISOString().split('T')[0]
+
+  const upcoming = calendar
+    .filter((e) => e.report_date && e.report_date > todayKey)
+    .sort((a, b) => a.report_date.localeCompare(b.report_date))
+
+  if (!upcoming.length) return (
+    <div className="text-xs text-gray-400">No upcoming earnings in the next 14 days.</div>
+  )
+
+  // Group by date
+  const grouped = {}
+  upcoming.forEach((e) => {
+    if (!grouped[e.report_date]) grouped[e.report_date] = []
+    grouped[e.report_date].push(e)
+  })
+
+  return (
+    <div className="space-y-2">
+      {Object.entries(grouped).map(([date, entries]) => (
+        <div key={date} className="flex gap-3 items-start">
+          <div className="w-28 shrink-0 pt-1">
+            <span className="text-xs font-semibold text-gray-500">{dayLabel(date)}</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {entries.map((e) => (
+              <Link
+                key={e.ticker}
+                to={`/companies/${e.ticker}`}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors hover:opacity-80 ${
+                  e.is_watchlist
+                    ? 'bg-blue-100 border-blue-200 text-blue-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-700'
+                }`}
+              >
+                {e.ticker}
+                {e.is_watchlist && <span className="text-blue-400">★</span>}
+              </Link>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Recent report card
+// ---------------------------------------------------------------------------
+
+function ReportCard({ entry }) {
   const pb = (() => {
     try {
       if (!entry.post_brief) return {}
@@ -124,64 +182,52 @@ function EarningsCard({ entry, trend }) {
     } catch { return {} }
   })()
 
-  const highlights = entry.key_highlights?.length ? entry.key_highlights : (pb.key_highlights || [])
+  const highlight = (entry.key_highlights?.[0]) || pb.key_highlights?.[0]
   const revenue = entry.revenue_actual ?? pb.revenue_actual
   const ebitMargin = pb.ebit_margin_pct
-  const isMiss = entry.beat_miss === 'miss'
-  const isBeat = entry.beat_miss === 'beat'
+  const hasBrief = !!pb.post_brief
 
   return (
-    <div className={`bg-white rounded-xl border p-4 hover:shadow-md transition-shadow flex flex-col ${
-      isMiss ? 'border-red-100' : isBeat ? 'border-emerald-100' : 'border-gray-100'
+    <div className={`bg-white rounded-xl border p-4 flex flex-col hover:shadow-sm transition-shadow ${
+      entry.beat_miss === 'miss' ? 'border-red-100' :
+      entry.beat_miss === 'beat' ? 'border-emerald-100' : 'border-gray-100'
     }`}>
-      {/* Header row */}
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Link to={`/companies/${entry.ticker}`} className="font-bold text-gray-900 hover:text-blue-600 text-base">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <Link to={`/companies/${entry.ticker}`} className="font-bold text-gray-900 hover:text-blue-600">
               {entry.ticker}
             </Link>
-            <span className="text-xs text-gray-400 font-medium bg-gray-50 px-1.5 py-0.5 rounded">
-              {entry.fiscal_period}
-            </span>
+            <span className="text-xs text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">{entry.fiscal_period}</span>
           </div>
-          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
             <BeatMissBadge value={entry.beat_miss} />
             <GuidanceBadge value={entry.guidance_tone} />
           </div>
         </div>
-        {/* Sparkline + revenue */}
-        <div className="flex flex-col items-end gap-0.5 shrink-0">
-          <RevenueSparkline data={trend} />
-          {revenue != null && (
-            <span className="text-xs text-gray-500 tabular-nums">
-              €{revenue >= 1000 ? `${(revenue / 1000).toFixed(1)}bn` : `${revenue.toFixed(0)}m`}
-            </span>
-          )}
+        <div className="text-right shrink-0">
+          {revenue != null && <div className="text-xs font-medium text-gray-700">{fmtRevenue(revenue)}</div>}
           {ebitMargin != null && (
-            <span className={`text-xs font-medium tabular-nums ${ebitMargin >= 15 ? 'text-emerald-600' : ebitMargin >= 8 ? 'text-gray-500' : 'text-amber-600'}`}>
+            <div className={`text-xs font-medium ${ebitMargin >= 15 ? 'text-emerald-600' : ebitMargin >= 8 ? 'text-gray-500' : 'text-amber-600'}`}>
               {ebitMargin.toFixed(1)}% EBIT
-            </span>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Top highlight */}
-      {highlights[0] && (
-        <p className="text-xs text-gray-600 line-clamp-2 mb-3 leading-relaxed flex-1">
-          {highlights[0]}
-        </p>
+      {highlight && (
+        <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed flex-1 mb-3">{highlight}</p>
       )}
 
-      {/* Footer */}
-      <div className="flex items-center justify-between mt-auto pt-2 border-t border-gray-50">
-        <span className="text-xs text-gray-400">{entry.report_date || ''}</span>
-        <Link
-          to={`/earnings/${entry.ticker}/${entry.fiscal_period}`}
-          className="text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
-        >
-          Open Analysis →
-        </Link>
+      <div className="flex items-center justify-between pt-2 border-t border-gray-50 mt-auto">
+        <span className="text-xs text-gray-400">{fmtDate(entry.report_date)}</span>
+        {hasBrief ? (
+          <Link to={`/earnings/${entry.ticker}/${entry.fiscal_period}`} className="text-xs font-semibold text-blue-600 hover:text-blue-800">
+            Open Brief →
+          </Link>
+        ) : (
+          <span className="text-xs text-amber-500 font-medium">No brief yet</span>
+        )}
       </div>
     </div>
   )
@@ -194,179 +240,88 @@ function EarningsCard({ entry, trend }) {
 export default function Dashboard() {
   const [calendar, setCalendar] = useState([])
   const [recent, setRecent] = useState([])
-  const [trends, setTrends] = useState({})
   const [loadingCal, setLoadingCal] = useState(true)
   const [loadingRecent, setLoadingRecent] = useState(true)
-  const [calError, setCalError] = useState(null)
 
-  useEffect(() => {
-    getCalendar(14)
-      .then(setCalendar)
-      .catch((e) => setCalError(e.message))
-      .finally(() => setLoadingCal(false))
+  const load = () => {
+    getCalendar(14).then(setCalendar).finally(() => setLoadingCal(false))
+    getRecentEarnings().then(setRecent).finally(() => setLoadingRecent(false))
+  }
 
-    getRecentEarnings()
-      .then((data) => {
-        setRecent(data)
-        const tickers = [...new Set(data.map((e) => e.ticker))]
-        if (tickers.length > 0) {
-          getEarningsTrends(tickers, 5).then(setTrends).catch(() => {})
-        }
-      })
-      .finally(() => setLoadingRecent(false))
-  }, [])
-
-  const sevenDaysAgo = new Date()
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-  const weekRecent = recent.filter((e) => e.report_date && new Date(e.report_date) >= sevenDaysAgo)
-  const weekBeats = weekRecent.filter((e) => e.beat_miss === 'beat').length
-  const weekMisses = weekRecent.filter((e) => e.beat_miss === 'miss').length
-  const weekInLine = weekRecent.filter((e) => e.beat_miss === 'in_line').length
+  useEffect(load, [])
 
   const today = new Date()
-  const todayKey = today.toISOString().split('T')[0]
-  const days = Array.from({ length: 14 }, (_, i) => {
-    const d = new Date(today)
-    d.setDate(today.getDate() + i)
-    return d
-  })
+  const todayStr = today.toISOString().split('T')[0]
+  const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 7)
 
-  const calendarByDate = {}
-  calendar.forEach((entry) => {
-    if (!calendarByDate[entry.report_date]) calendarByDate[entry.report_date] = []
-    calendarByDate[entry.report_date].push(entry)
-  })
+  // Only show past reports — future-dated entries belong in the upcoming calendar
+  const pastReports = recent.filter((e) => e.report_date && e.report_date <= todayStr)
+  const lastWeek = pastReports.filter((e) => new Date(e.report_date) >= sevenDaysAgo)
+  const older = pastReports.filter((e) => new Date(e.report_date) < sevenDaysAgo)
 
-  const upcomingWatchlist = calendar.filter((e) => {
-    if (!e.report_date || !e.is_watchlist) return false
-    const diff = Math.round((new Date(e.report_date) - today) / 86400000)
-    return diff > 0 && diff <= 7
-  })
+  const loading = loadingCal || loadingRecent
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-7">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-gray-500 mt-1">Earnings calendar, recent results, and portfolio watchlist</p>
+        <p className="text-gray-400 text-sm mt-1">Morning briefing — earnings calendar, recent results, and action queue</p>
       </div>
 
-      {/* Reporting Today strip */}
-      {!loadingCal && <ReportingTodayStrip entries={calendar} />}
-
-      {/* Watchlist upcoming this week */}
-      {upcomingWatchlist.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-sm font-semibold text-amber-800">★ Watchlist — Reporting This Week</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {upcomingWatchlist.map((e) => (
-              <Link
-                key={`${e.ticker}-${e.report_date}`}
-                to={`/companies/${e.ticker}`}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-amber-200 text-sm font-medium text-amber-900 hover:bg-amber-100 transition-colors"
-              >
-                <span className="font-bold">{e.ticker}</span>
-                <span className="text-xs text-amber-500">{e.report_date}</span>
-              </Link>
-            ))}
-          </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
         </div>
-      )}
+      ) : (
+        <>
+          {/* Needs attention */}
+          <NeedsAttention recent={recent} onBriefGenerated={load} />
 
-      {/* Week Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: 'Reports This Week', value: weekRecent.length, color: 'bg-blue-50 text-blue-700' },
-          { label: 'Beats', value: weekBeats, color: 'bg-emerald-50 text-emerald-700' },
-          { label: 'Misses', value: weekMisses, color: 'bg-red-50 text-red-700' },
-          { label: 'In Line', value: weekInLine, color: 'bg-amber-50 text-amber-700' },
-        ].map((stat) => (
-          <div key={stat.label} className={`rounded-xl p-4 ${stat.color}`}>
-            <div className="text-3xl font-bold">{stat.value}</div>
-            <div className="text-sm font-medium mt-1 opacity-80">{stat.label}</div>
-          </div>
-        ))}
-      </div>
+          {/* Two-column: upcoming + last 7 days */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Upcoming */}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                Upcoming
+                <span className="text-xs font-normal text-gray-400">next 14 days</span>
+              </h2>
+              <UpcomingCalendar calendar={calendar} />
+              <div className="flex gap-3 mt-3 text-xs text-gray-400">
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-100 inline-block" /> Watchlist</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-gray-100 inline-block" /> Platform</span>
+              </div>
+            </div>
 
-      {/* Recent Reports Feed */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-800">Recent Reports</h2>
-          <span className="text-xs text-gray-400">Last 30 days · {recent.length} result{recent.length !== 1 ? 's' : ''}</span>
-        </div>
-        {loadingRecent ? (
-          <div className="text-gray-500 text-sm">Loading…</div>
-        ) : recent.length === 0 ? (
-          <div className="text-gray-400 text-sm">No earnings reported recently.</div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {recent.map((e) => (
-              <EarningsCard key={e.id} entry={e} trend={trends[e.ticker]} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 14-Day Calendar Grid */}
-      <div>
-        <h2 className="text-lg font-semibold text-gray-800 mb-3">14-Day Earnings Calendar</h2>
-        {loadingCal ? (
-          <div className="text-gray-500 text-sm">Loading calendar…</div>
-        ) : calError ? (
-          <div className="text-red-500 text-sm">Could not load calendar: {calError}</div>
-        ) : (
-          <div className="grid grid-cols-7 gap-2">
-            {DAYS_OF_WEEK.map((d) => (
-              <div key={d} className="text-xs font-semibold text-gray-400 text-center pb-1">{d}</div>
-            ))}
-            {Array.from({ length: days[0].getDay() }, (_, i) => (
-              <div key={`empty-${i}`} />
-            ))}
-            {days.map((day) => {
-              const key = day.toISOString().split('T')[0]
-              const entries = calendarByDate[key] || []
-              const isToday = key === todayKey
-              return (
-                <div
-                  key={key}
-                  className={`rounded-lg border p-2 min-h-[80px] ${
-                    isToday ? 'border-blue-400 bg-blue-50' : 'border-gray-100 bg-white'
-                  }`}
-                >
-                  <div className={`text-xs font-semibold mb-1 ${isToday ? 'text-blue-600' : 'text-gray-500'}`}>
-                    {day.getDate()}
-                  </div>
-                  <div className="space-y-0.5">
-                    {entries.slice(0, 4).map((entry) => (
-                      <Link
-                        key={entry.ticker}
-                        to={`/companies/${entry.ticker}`}
-                        className={`block text-xs truncate rounded px-1 py-0.5 font-medium ${
-                          entry.is_watchlist
-                            ? 'bg-blue-100 text-blue-700'
-                            : entry.on_platform
-                            ? 'bg-gray-100 text-gray-700'
-                            : 'text-gray-500'
-                        }`}
-                      >
-                        {entry.ticker}
-                      </Link>
-                    ))}
-                    {entries.length > 4 && (
-                      <div className="text-xs text-gray-400">+{entries.length - 4} more</div>
-                    )}
-                  </div>
+            {/* Last 7 days */}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                Just Reported
+                <span className="text-xs font-normal text-gray-400">last 7 days · {lastWeek.length} result{lastWeek.length !== 1 ? 's' : ''}</span>
+              </h2>
+              {lastWeek.length === 0 ? (
+                <div className="text-xs text-gray-400">No reports in the last 7 days.</div>
+              ) : (
+                <div className="space-y-3">
+                  {lastWeek.map((e) => <ReportCard key={e.id} entry={e} />)}
                 </div>
-              )
-            })}
+              )}
+            </div>
           </div>
-        )}
-        <div className="flex gap-4 mt-2 text-xs text-gray-500">
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100 inline-block" /> Watchlist</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-100 inline-block" /> Platform company</span>
-        </div>
-      </div>
+
+          {/* Older reports */}
+          {older.length > 0 && (
+            <div>
+              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                Older Reports
+                <span className="text-xs font-normal text-gray-400">8–30 days ago · {older.length} results</span>
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {older.map((e) => <ReportCard key={e.id} entry={e} />)}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
