@@ -1,0 +1,122 @@
+[
+  {
+    "ticker": "AAPL",
+    "name": "Apple Inc.",
+    "sector": "Technology",
+    "exchange": "XNAS",
+    "country": "US",
+    "fmp_symbol": "AAPL",
+    "ir_url": "https://investor.apple.com/news/press-releases/default.aspx",
+    "custom_kpis": ["iphone_revenue_bn", "services_revenue_bn", "mac_revenue_bn", "wearables_revenue_bn", "gross_margin_pct"]
+  },
+  {
+    "ticker": "NVDA",
+    "name": "NVIDIA Corporation",
+    "sector": "Technology",
+    "exchange": "XNAS",
+    "country": "US",
+    "fmp_symbol": "NVDA",
+    "ir_url": "https://investor.nvidia.com/news/press-release-details/2025/default.aspx",
+    "custom_kpis": ["data_center_revenue_bn", "gaming_revenue_bn", "automotive_revenue_bn", "gross_margin_pct"]
+  },
+  {
+    "ticker": "JPM",
+    "name": "JPMorgan Chase & Co.",
+    "sector": "Financials",
+    "exchange": "XNYS",
+    "country": "US",
+    "fmp_symbol": "JPM",
+    "ir_url": "https://www.jpmorganchase.com/ir/news/2025/jpmc-4q24-earnings",
+    "custom_kpis": ["net_interest_income_bn", "investment_banking_revenue_bn", "cet1_ratio_pct", "return_on_equity_pct", "loan_loss_provision_bn"]
+  },
+  {
+    "ticker": "ELAN",
+    "name": "Elanco Animal Health",
+    "sector": "Health Care",
+    "exchange": "XNYS",
+    "country": "US",
+    "fmp_symbol": "ELAN",
+    "ir_url": "https://ir.elanco.com/news-releases",
+    "custom_kpis": ["pet_health_revenue_bn", "farm_animal_revenue_bn", "adjusted_ebitda_margin_pct", "net_leverage_ratio"]
+  },
+  {
+    "ticker": "ING",
+    "name": "ING Groep N.V.",
+    "sector": "Financials",
+    "exchange": "XAMS",
+    "country": "NL",
+    "fmp_symbol": "ING.AS",
+    "ir_url": "https://www.ing.com/Investor-relations/Financial-results.htm",
+    "custom_kpis": ["net_interest_income_bn", "cost_income_ratio_pct", "cet1_ratio_pct", "return_on_equity_pct"]
+  },
+  {
+    "ticker": "ASML",
+    "name": "ASML Holding N.V.",
+    "sector": "Technology",
+    "exchange": "XAMS",
+    "country": "NL",
+    "fmp_symbol": "ASML.AS",
+    "ir_url": "https://www.asml.com/en/investors/financial-results",
+    "custom_kpis": ["euv_shipments", "duv_immersion_shipments", "backlog_bn", "gross_margin_pct", "net_bookings_bn"]
+  },
+  {
+    "ticker": "SIKA",
+    "name": "Sika AG",
+    "sector": "Materials",
+    "exchange": "XSWX",
+    "country": "CH",
+    "fmp_symbol": "SIKA.SW",
+    "ir_url": "https://www.sika.com/en/media/media-releases/2025/half-year-report-2025.html",
+    "custom_kpis": ["organic_growth_pct", "ebitda_margin_pct", "acquisition_contribution_pct", "free_cash_flow_bn"]
+  },
+  {
+    "ticker": "NWG",
+    "name": "NatWest Group plc",
+    "sector": "Financials",
+    "exchange": "XLON",
+    "country": "GB",
+    "fmp_symbol": "NWG.L",
+    "ir_url": "https://investors.natwestgroup.com/results-and-reports/results",
+    "custom_kpis": ["net_interest_margin_pct", "cet1_ratio_pct", "return_on_tangible_equity_pct", "cost_income_ratio_pct", "impairment_charge_bn"]
+  },
+  {
+    "ticker": "PRY",
+    "name": "Prysmian S.p.A.",
+    "sector": "Industrials",
+    "exchange": "XMIL",
+    "country": "IT",
+    "fmp_symbol": "PRY.MI",
+    "ir_url": "https://www.prysmiangroup.com/en/investor-corner/results-and-reports",
+    "custom_kpis": ["organic_growth_pct", "adjusted_ebitda_bn", "backlog_bn", "high_voltage_revenue_bn"]
+  },
+  {
+    "ticker": "IFX",
+    "name": "Infineon Technologies AG",
+    "sector": "Technology",
+    "exchange": "XFRA",
+    "country": "DE",
+    "fmp_symbol": "IFX.DE",
+    "ir_url": "https://www.infineon.com/press-release/2025/INFXX202505-098",
+    "custom_kpis": ["automotive_revenue_bn", "industrial_revenue_bn", "gross_margin_pct", "segment_result_margin_pct"]
+  },
+  {
+    "ticker": "AZN",
+    "name": "AstraZeneca PLC",
+    "sector": "Health Care",
+    "exchange": "XLON",
+    "country": "GB",
+    "fmp_symbol": "AZN.L",
+    "ir_url": "https://www.astrazeneca.com/investor-relations/financial-results.html",
+    "custom_kpis": ["oncology_revenue_bn", "rare_disease_revenue_bn", "core_eps", "product_sales_bn"]
+  },
+  {
+    "ticker": "NOVO",
+    "name": "Novo Nordisk A/S",
+    "sector": "Health Care",
+    "exchange": "XCSE",
+    "country": "DK",
+    "fmp_symbol": "NOVO-B.CO",
+    "ir_url": "https://www.novonordisk.com/investors/financial-results.html",
+    "custom_kpis": ["ozempic_sales_bn", "wegovy_sales_bn", "obesity_segment_growth_pct", "diabetes_segment_growth_pct", "rd_spend_bn"]
+  }
+]
