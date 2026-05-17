@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 import { getCompany, getEarnings, triggerPreBrief, triggerPostBrief, getBaseURL, getBaseURL as baseURL } from '../api/index'
 import client from '../api/client'
@@ -43,8 +44,6 @@ function ToneBadge({ value, type }) {
   )
 }
 
-const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444']
-
 // ---------------------------------------------------------------------------
 // Research (onboarding) panel — streams live Claude agent progress
 // ---------------------------------------------------------------------------
@@ -68,6 +67,200 @@ function ToolCallLine({ event }) {
     return <div className="text-xs text-blue-600 py-0.5 font-medium">{event.message}</div>
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Financial trends chart (populated from Bloomberg upload)
+// ---------------------------------------------------------------------------
+
+const _fmtMoney = (v, cur = '') =>
+  v == null ? '—' : `${cur}${v >= 1000 ? `${(v / 1000).toFixed(1)}bn` : `${Math.round(v)}m`}`
+
+const FINANCIAL_METRICS = [
+  {
+    key: 'revenue',
+    label: 'Revenue',
+    getActual: (e) => e.revenue_actual ?? null,
+    getEst:    (e) => e.revenue_est ?? null,
+    fmt: _fmtMoney,
+  },
+  {
+    key: 'ebit',
+    label: 'EBIT',
+    getActual: (e) => e.post_brief?.ebit ?? null,
+    getEst:    (e) => e.ebit_est ?? null,
+    fmt: _fmtMoney,
+  },
+  {
+    key: 'ebitda',
+    label: 'EBITDA',
+    getActual: (e) => e.post_brief?.ebitda ?? null,
+    getEst:    (e) => null,
+    fmt: _fmtMoney,
+  },
+  {
+    key: 'net_income',
+    label: 'Net Income',
+    getActual: (e) => e.post_brief?.net_income ?? null,
+    getEst:    (e) => e.net_income_est ?? null,
+    fmt: _fmtMoney,
+  },
+  {
+    key: 'eps',
+    label: 'EPS',
+    getActual: (e) => e.eps_actual ?? null,
+    getEst:    (e) => e.eps_est ?? null,
+    fmt: (v) => v == null ? '—' : v.toFixed(2),
+  },
+  {
+    key: 'ebit_margin',
+    label: 'EBIT Margin',
+    getActual: (e) => e.post_brief?.ebit_margin_pct ?? null,
+    getEst:    (e) => null,
+    fmt: (v) => v == null ? '—' : `${v.toFixed(1)}%`,
+  },
+  {
+    key: 'ebitda_margin',
+    label: 'EBITDA Margin',
+    getActual: (e) => e.post_brief?.ebitda_margin_pct ?? null,
+    getEst:    (e) => null,
+    fmt: (v) => v == null ? '—' : `${v.toFixed(1)}%`,
+  },
+  {
+    key: 'fcf',
+    label: 'Free CF',
+    getActual: (e) => e.post_brief?.free_cash_flow ?? null,
+    getEst:    (e) => null,
+    fmt: _fmtMoney,
+  },
+]
+
+function sortedByPeriod(arr) {
+  return [...arr].sort((a, b) => {
+    const parse = (fp) => {
+      if (!fp) return [0, 0]
+      const [q, y] = fp.split('-')
+      return [parseInt(y) || 0, parseInt((q || '').replace('Q', '')) || 0]
+    }
+    const [ya, qa] = parse(a.fiscal_period)
+    const [yb, qb] = parse(b.fiscal_period)
+    return ya !== yb ? ya - yb : qa - qb
+  })
+}
+
+function FinancialChart({ earnings }) {
+  const sorted = sortedByPeriod(earnings)
+
+  // Detect currency from analyst_estimates blob if present
+  const currency = sorted.find(e => e.analyst_estimates?.currency)?.analyst_estimates?.currency || ''
+  const cur = currency === 'EUR' ? '€' : currency === 'USD' ? '$' : currency === 'GBP' ? '£' : ''
+
+  // Only include metrics with ≥ 2 data points
+  const available = FINANCIAL_METRICS.filter((m) => {
+    const pts = sorted.filter((e) => m.getActual(e) != null || m.getEst(e) != null)
+    return pts.length >= 2
+  })
+
+  const [activeKey, setActiveKey] = useState(null)
+
+  const resolvedKey = activeKey && available.find(m => m.key === activeKey) ? activeKey : available[0]?.key
+
+  if (available.length === 0) return null
+
+  const metric = available.find(m => m.key === resolvedKey)
+
+  const chartData = sorted
+    .map((e) => {
+      const actual = metric.getActual(e)
+      const est    = metric.getEst(e)
+      const value  = actual ?? est
+      if (value == null) return null
+      return {
+        period:    e.fiscal_period,
+        value,
+        isEst:     actual == null,
+        label:     metric.fmt(value, cur),
+      }
+    })
+    .filter(Boolean)
+
+  const firstEstIdx = chartData.findIndex((d) => d.isEst)
+
+  const tickFmt = (v) => {
+    if (metric.key === 'ebit_margin' || metric.key === 'ebitda_margin') return `${v.toFixed(0)}%`
+    if (metric.key === 'eps') return v.toFixed(1)
+    return v >= 1000 ? `${(v / 1000).toFixed(0)}bn` : `${Math.round(v)}m`
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <h2 className="text-base font-semibold text-gray-800">Financial Trends</h2>
+        <div className="flex items-center gap-3 text-xs text-gray-400 shrink-0">
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm bg-indigo-600 inline-block" /> Actual
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm bg-indigo-200 inline-block" /> Consensus est
+          </span>
+        </div>
+      </div>
+
+      {/* Metric pills */}
+      <div className="flex flex-wrap gap-1.5 mb-5">
+        {available.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => setActiveKey(m.key)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              resolvedKey === m.key
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <ResponsiveContainer width="100%" height={210}>
+        <BarChart data={chartData} barCategoryGap="32%" margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+          <XAxis
+            dataKey="period"
+            tick={{ fontSize: 11, fill: '#6b7280' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 11, fill: '#6b7280' }}
+            width={52}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={tickFmt}
+          />
+          <Tooltip
+            cursor={{ fill: '#f3f4f6' }}
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.07)' }}
+            formatter={(_, __, { payload }) => [payload.label, metric.label]}
+          />
+          {firstEstIdx > 0 && (
+            <ReferenceLine
+              x={chartData[firstEstIdx].period}
+              stroke="#d1d5db"
+              strokeDasharray="4 2"
+              label={{ value: '← Actual   Est →', position: 'top', fontSize: 10, fill: '#9ca3af', dy: -2 }}
+            />
+          )}
+          <Bar dataKey="value" radius={[3, 3, 0, 0]} maxBarSize={44}>
+            {chartData.map((d, i) => (
+              <Cell key={i} fill={d.isEst ? '#a5b4fc' : '#4f46e5'} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -509,22 +702,6 @@ export default function CompanyDetail() {
     return <div className="text-red-500">Company not found.</div>
   }
 
-  // Build KPI chart data from earnings history
-  const customKpis = company.custom_kpis || []
-  const chartKpis = customKpis.slice(0, 2)
-  const chartData = [...earnings]
-    .reverse()
-    .slice(-8)
-    .map((e) => {
-      const kpis = e.custom_kpis || {}
-      const point = { period: e.fiscal_period }
-      chartKpis.forEach((kpi) => {
-        point[kpi] = kpis[kpi] ?? null
-      })
-      return point
-    })
-    .filter((p) => chartKpis.some((k) => p[k] !== null))
-
   const latestEarnings = earnings[0]
   const latestBrief = latestEarnings?.post_brief || latestEarnings?.pre_brief
 
@@ -632,35 +809,8 @@ export default function CompanyDetail() {
         <BloombergModelUpload ticker={ticker} onDone={refreshAll} />
       </div>
 
-      {/* KPI Trend Chart */}
-      {chartData.length > 0 && chartKpis.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-          <h2 className="text-base font-semibold text-gray-800 mb-4">KPI Trends</h2>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} width={60} />
-              <Tooltip
-                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
-              />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              {chartKpis.map((kpi, i) => (
-                <Line
-                  key={kpi}
-                  type="monotone"
-                  dataKey={kpi}
-                  name={kpi.replace(/_/g, ' ')}
-                  stroke={CHART_COLORS[i % CHART_COLORS.length]}
-                  strokeWidth={2}
-                  dot={{ r: 3 }}
-                  connectNulls
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
+      {/* Financial Trends chart — only when Bloomberg data is present */}
+      <FinancialChart earnings={earnings} />
 
       {/* Latest Brief Card */}
       {latestBrief && (
