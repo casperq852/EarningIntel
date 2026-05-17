@@ -109,41 +109,52 @@ class ClaudeService:
         prior_quarters: List[Dict[str, Any]],
         transcript_chunks: Optional[str],
         custom_kpi_list: List[str],
+        existing_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a post-earnings brief by synthesising actual results and transcript.
+        Generate a post-earnings brief from DB data (Bloomberg actuals + onboarding context).
         """
         prior_quarters_text = json.dumps(prior_quarters, indent=2) if prior_quarters else "No prior quarter data available."
-        transcript_text = transcript_chunks or "No transcript available for this period."
         kpis_text = ", ".join(custom_kpi_list) if custom_kpi_list else "None specified."
+        ctx = existing_context or {}
 
         custom_kpi_schema = {kpi: "number or null" for kpi in custom_kpi_list}
         schema = dict(_POST_BRIEF_SCHEMA)
         schema["custom_kpis"] = custom_kpi_schema
 
-        prompt = f"""You are analysing the earnings results for {company} for fiscal period {fiscal_period}.
+        ctx_block = ""
+        if ctx:
+            ctx_block = f"""
+## Additional Context (from onboarding / prior analysis)
+- Beat/Miss: {ctx.get('beat_miss') or 'unknown'}
+- Management tone: {ctx.get('mgmt_tone') or 'unknown'}
+- Guidance tone: {ctx.get('guidance_tone') or 'unknown'}
+- Guidance detail: {ctx.get('guidance_detail') or 'none on record'}
+- EBIT: {ctx.get('ebit')} | EBITDA: {ctx.get('ebitda')}
+- EBIT margin: {ctx.get('ebit_margin_pct')}% | EBITDA margin: {ctx.get('ebitda_margin_pct')}%
+- Net income: {ctx.get('net_income')} | Free cash flow: {ctx.get('free_cash_flow')}
+- Existing summary: {ctx.get('existing_summary') or 'none'}
+- Existing highlights: {json.dumps(ctx.get('existing_highlights') or [])}
+- Existing red flags: {json.dumps(ctx.get('existing_red_flags') or [])}
+"""
 
-## Reported Financials
-- Revenue Actual: {revenue_actual}
-- Revenue Estimate: {revenue_est}
-- Revenue Surprise %: {revenue_surprise_pct}
-- EPS Actual: {eps_actual}
-- EPS Estimate: {eps_est}
-- EPS Surprise %: {eps_surprise_pct}
+        prompt = f"""You are writing a post-earnings analyst brief for {company}, fiscal period {fiscal_period}.
 
-## Custom KPIs to Extract
-{kpis_text}
-
-## Prior Quarters (for trend analysis)
+## Reported Financials (from Bloomberg)
+- Revenue: {revenue_actual} actual vs {revenue_est} estimate ({f'{revenue_surprise_pct:+.1f}%' if revenue_surprise_pct else 'surprise n/a'})
+- EPS: {eps_actual} actual vs {eps_est} estimate ({f'{eps_surprise_pct:+.1f}%' if eps_surprise_pct else 'surprise n/a'})
+{ctx_block}
+## Prior Quarters (trend context)
 {prior_quarters_text}
 
-## Earnings Call Transcript Excerpt
-{transcript_text[:6000] if transcript_text else "Not available."}
+## Custom KPIs to address if data is present
+{kpis_text}
 
 ## Required JSON Schema
 {json.dumps(schema, indent=2)}
 
-Respond with valid JSON only, no markdown, no preamble. Populate the custom_kpis object with the values extracted from the transcript or financials. Return null for any custom KPI not mentioned."""
+Write a crisp, PM-ready brief. Use all available context above. Confirm or refine the beat_miss/mgmt_tone/guidance_tone fields based on the full picture.
+Respond with valid JSON only, no markdown, no preamble."""
 
         return await self._call_with_retry(prompt, max_tokens=4096)
 
@@ -157,9 +168,11 @@ Respond with valid JSON only, no markdown, no preamble. Populate the custom_kpis
         prior_quarter: Optional[Dict[str, Any]],
         prior_guidance: Optional[str],
         custom_kpi_list: List[str],
+        ebit_est: Optional[float] = None,
+        company_overview: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a pre-earnings brief with consensus expectations and key watch items.
+        Generate a pre-earnings brief from DB consensus estimates (Bloomberg) and prior actuals.
         """
         prior_q_text = json.dumps(prior_quarter, indent=2) if prior_quarter else "No prior quarter data available."
         guidance_text = prior_guidance or "No explicit guidance on record."
@@ -169,11 +182,14 @@ Respond with valid JSON only, no markdown, no preamble. Populate the custom_kpis
         schema = dict(_PRE_BRIEF_SCHEMA)
         schema["custom_kpis_est"] = custom_kpi_schema
 
-        prompt = f"""You are preparing a pre-earnings brief for {company} ahead of their {fiscal_period} results, expected on {report_date or "date TBD"}.
+        overview_block = f"\n## Company Overview\n{company_overview}\n" if company_overview else ""
 
-## Consensus Estimates
-- Revenue Estimate: {revenue_est}
-- EPS Estimate: {eps_est}
+        prompt = f"""You are preparing a pre-earnings brief for {company} ahead of their {fiscal_period} results, expected on {report_date or "date TBD"}.
+{overview_block}
+## Bloomberg Consensus Estimates
+- Revenue: {revenue_est}
+- EPS: {eps_est}
+- EBIT: {ebit_est if ebit_est else "n/a"}
 
 ## Custom KPIs to Monitor
 {kpis_text}
