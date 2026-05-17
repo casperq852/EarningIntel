@@ -25,19 +25,36 @@ of a Bloomberg aggregate analyst model Excel export and must extract quarterly f
 Return ONLY valid JSON — no preamble, no markdown fences, no explanation.
 
 Critical rules:
-- fiscal_period format MUST be "Q1-2026", "Q2-2025" etc. Derive from column headers.
-  Bloomberg often shows calendar quarters; map to fiscal quarters if the company has
-  a non-calendar fiscal year (use context clues or default to calendar).
-- All monetary values in MILLIONS. Convert: billions → ×1000, thousands → ÷1000.
-- is_estimate: true = forward consensus estimate, false = historical reported actual.
-  Actuals are marked "A", "Act", "Actual", or are in past columns. Estimates are marked
-  "E", "Est", "Consensus", or are in future columns.
+
+PERIOD IDENTIFICATION:
+- fiscal_period format MUST be "Q1-2026", "Q2-2025" etc.
+- Bloomberg "Multiple Periods" format uses headers like "2024 Q2 (Rep)" or "2026 Q2 (Fwd)".
+  Convert "2024 Q2" → "Q2-2024", "2025 Q3" → "Q3-2025", etc.
+- "(Rep)" or "(Reported)" = historical reported actual → is_estimate: false
+- "(Fwd)" or "(Forward)" or "(Est)" = forward consensus estimate → is_estimate: true
+- Also recognize: "A" / "Act" / "Actual" = actual; "E" / "Est" / "Consensus" = estimate
+- The header row with period labels is usually row 3; the date row below it confirms calendar end.
+
+FIELD MAPPING (Bloomberg field codes → output fields):
+- Revenue: IS_COMP_SALES, SALES_REV_TURN (consolidated), IS902 → revenue
+- EPS: IS_COMP_EPS_ADJUSTED_OLD, IS_EPS → eps
+- EBIT / Adj Operating Income: IS_COMPARABLE_EBIT, IS_ADJ_EBIT_OP_INC_AS_REPORTED, IM132 → ebit
+- EBITDA / Adj EBITDA: IS_COMPARABLE_EBITDA, IS_ADJUSTED_EBITDA_AS_REPORTED, IM131 → ebitda
+- Net Income: IS_COMP_NET_INCOME_GAAP, IS904 → net_income
+- Use the TOP-LEVEL consolidated rows (no Segment Id), not the per-segment rows for these totals.
+
+MONETARY VALUES:
+- All values in MILLIONS. File header usually states "In Millions of EUR/USD/GBP".
+- If header says "In Billions" → multiply by 1000.
+
+SEGMENT BREAKDOWN:
+- Look for rows with a "Segment Id" column (e.g. "SEG1092246393 Segment").
+- For top-level segments only (1 indent level), extract revenue and EBITDA/EBIT margin if present.
+- Format: {"SegmentName": {"revenue": 1200.0, "margin_pct": 18.5}}
+
+OTHER:
 - Use null for fields not found — never invent numbers.
-- revenue, ebit, ebitda, net_income are the consensus MEAN (or reported actual for history).
-  If only median is available, use it.
 - analyst_count: number of contributing analysts if shown, else null.
-- segment_breakdown: extract if a segment/divisional table is present.
-  Format: {"SegmentName": {"revenue": 1200.0, "margin_pct": 18.5}} — null if not present.
 - Include ALL periods found, both historical and forward."""
 
 _SCHEMA = """{
