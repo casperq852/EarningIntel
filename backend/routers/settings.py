@@ -47,8 +47,8 @@ async def update_settings(
 
     await db.execute(
         text("""
-            INSERT INTO app_settings (id, config) VALUES (1, :config::jsonb)
-            ON CONFLICT (id) DO UPDATE SET config = :config::jsonb, updated_at = NOW()
+            INSERT INTO app_settings (id, config) VALUES (1, CAST(:config AS jsonb))
+            ON CONFLICT (id) DO UPDATE SET config = CAST(:config AS jsonb), updated_at = NOW()
         """),
         {"config": json.dumps(merged)},
     )

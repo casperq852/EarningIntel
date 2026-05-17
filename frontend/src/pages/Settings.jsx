@@ -318,13 +318,15 @@ export default function Settings() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <div className="mb-3">
           <h3 className="text-sm font-semibold text-gray-800">OpenRouter API Key</h3>
-          <p className="text-xs text-gray-400 mt-0.5">Required when either step above is set to OpenRouter.</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Leave blank to use the <code className="font-mono bg-gray-100 px-1 rounded">OPENROUTER_API_KEY</code> environment variable (already set in your <code className="font-mono bg-gray-100 px-1 rounded">.env</code>).
+          </p>
         </div>
         <input
           type="password"
           value={settings.openrouter_api_key || ''}
           onChange={(e) => handleChange({ openrouter_api_key: e.target.value || null })}
-          placeholder="sk-or-..."
+          placeholder="Leave blank to use .env value"
           className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-700 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-300"
         />
       </div>
