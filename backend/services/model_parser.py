@@ -1,9 +1,12 @@
 """
 Bloomberg analyst model parser.
 
-Reads an uploaded .xlsx file, extracts a text representation of the sheets,
-then asks Claude to identify quarterly consensus estimates (revenue, EPS, EBIT,
-net income, margins). Returns structured JSON ready to upsert into earnings.
+Reads an uploaded .xlsx file, converts to text, then asks Claude to extract:
+  - Historical actuals (past quarters that have already reported)
+  - Forward consensus estimates (future quarters)
+  - Segment/divisional breakdown if present
+
+Returns structured JSON ready to persist into the earnings table.
 """
 from __future__ import annotations
 
@@ -16,43 +19,68 @@ import anthropic
 
 MODEL = "claude-sonnet-4-20250514"
 
-_SYSTEM = """You are a financial data parser specialising in Bloomberg analyst model exports.
-You will be given the raw cell content of an Excel file and must extract quarterly consensus estimates.
+_SYSTEM = """You are a financial data extraction specialist. You receive the raw cell content
+of a Bloomberg aggregate analyst model Excel export and must extract quarterly financial data.
 
-Return ONLY valid JSON — no preamble, no markdown fences.
+Return ONLY valid JSON — no preamble, no markdown fences, no explanation.
 
-Rules:
-- fiscal_period format: "Q1-2026", "Q2-2025" etc. Infer from column headers.
-- All monetary values in MILLIONS (convert billions → multiply by 1000, thousands → divide by 1000).
-- Use null for any field not found.
-- is_estimate: true if the period is a forward consensus estimate, false if it is a historical actual.
-- Include both historical and forward periods if present.
-- revenue_est, ebit_est, net_income_est, eps_est are the consensus MEAN values.
-- If you see multiple estimate types (mean, median, high, low) — use mean. If only median present, use that.
-- analyst_count: number of contributors if shown, else null.
-- extra: any other relevant per-period metrics found (e.g. EBITDA, gross margin %) as key/value pairs."""
+Critical rules:
+- fiscal_period format MUST be "Q1-2026", "Q2-2025" etc. Derive from column headers.
+  Bloomberg often shows calendar quarters; map to fiscal quarters if the company has
+  a non-calendar fiscal year (use context clues or default to calendar).
+- All monetary values in MILLIONS. Convert: billions → ×1000, thousands → ÷1000.
+- is_estimate: true = forward consensus estimate, false = historical reported actual.
+  Actuals are marked "A", "Act", "Actual", or are in past columns. Estimates are marked
+  "E", "Est", "Consensus", or are in future columns.
+- Use null for fields not found — never invent numbers.
+- revenue, ebit, ebitda, net_income are the consensus MEAN (or reported actual for history).
+  If only median is available, use it.
+- analyst_count: number of contributing analysts if shown, else null.
+- segment_breakdown: extract if a segment/divisional table is present.
+  Format: {"SegmentName": {"revenue": 1200.0, "margin_pct": 18.5}} — null if not present.
+- Include ALL periods found, both historical and forward."""
 
 _SCHEMA = """{
-  "company_name": "string or null — as shown in the file",
-  "currency": "EUR | USD | GBP | etc.",
+  "company_name": "string or null",
+  "currency": "EUR",
   "quarters": [
     {
-      "fiscal_period": "Q2-2026",
+      "fiscal_period": "Q2-2025",
+      "is_estimate": false,
+      "revenue": 19800.0,
+      "ebit": 3050.0,
+      "ebitda": 4200.0,
+      "net_income": 2100.0,
+      "eps": 2.65,
+      "ebit_margin_pct": 15.4,
+      "ebitda_margin_pct": 21.2,
+      "analyst_count": null,
+      "segment_breakdown": {
+        "Digital Industries": {"revenue": 6200.0, "margin_pct": 20.1},
+        "Smart Infrastructure": {"revenue": 5900.0, "margin_pct": 14.8}
+      },
+      "extra": {}
+    },
+    {
+      "fiscal_period": "Q3-2025",
       "is_estimate": true,
-      "revenue_est": 5200.0,
-      "ebit_est": 850.0,
-      "net_income_est": 620.0,
-      "eps_est": 1.42,
-      "ebit_margin_est": 16.3,
-      "analyst_count": 28,
-      "extra": {"ebitda_est": 1100.0, "gross_margin_est": 42.1}
+      "revenue": 20500.0,
+      "ebit": 3200.0,
+      "ebitda": 4400.0,
+      "net_income": 2200.0,
+      "eps": 2.78,
+      "ebit_margin_pct": 15.6,
+      "ebitda_margin_pct": 21.5,
+      "analyst_count": 24,
+      "segment_breakdown": null,
+      "extra": {"capex_est": 800.0, "fcf_est": 2100.0}
     }
   ]
 }"""
 
 
-def _excel_to_text(content_bytes: bytes, max_chars: int = 40_000) -> str:
-    """Convert Excel file to a compact text representation for Claude."""
+def _excel_to_text(content_bytes: bytes, max_chars: int = 45_000) -> str:
+    """Convert all sheets in an Excel file to tab-separated text."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
 
@@ -61,8 +89,15 @@ def _excel_to_text(content_bytes: bytes, max_chars: int = 40_000) -> str:
         ws = wb[sheet_name]
         rows = []
         for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
-            # Skip rows that are entirely empty
+            cells = []
+            for c in row:
+                if c is None:
+                    cells.append("")
+                elif isinstance(c, float):
+                    # Avoid scientific notation for small numbers
+                    cells.append(f"{c:g}")
+                else:
+                    cells.append(str(c))
             if any(c.strip() for c in cells):
                 rows.append("\t".join(cells))
         if rows:
@@ -80,27 +115,34 @@ async def parse_bloomberg_model(
     """
     Parse a Bloomberg aggregate analyst model Excel file.
     Returns dict with 'company_name', 'currency', and 'quarters' list.
+    Each quarter has is_estimate flag, financials, and optional segment_breakdown.
     """
     excel_text = _excel_to_text(content_bytes)
 
-    prompt = f"""Parse this Bloomberg analyst model export (filename: {filename}).
-Extract all quarterly consensus estimates you can find.
+    prompt = f"""Parse this Bloomberg analyst model export and extract all quarterly data.
+Filename: {filename}
+
+Instructions:
+- Extract BOTH historical actuals (is_estimate: false) AND forward consensus estimates (is_estimate: true)
+- Look carefully for segment/divisional breakdowns — Bloomberg models often have a separate sheet or section
+- If the file has multiple sheets, check all of them for financial data
+- Revenue and P&L lines are usually rows; quarters are usually columns
+- Look for period labels like "Q1 25A", "2Q25E", "FY2025E", "H1 2026" etc.
 
 File content:
 {excel_text}
 
-Return JSON matching exactly this schema:
+Return JSON matching exactly this schema (include ALL quarters found):
 {_SCHEMA}"""
 
     response = await client.messages.create(
         model=MODEL,
-        max_tokens=4000,
+        max_tokens=6000,
         system=_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
 
     raw = "".join(b.text for b in response.content if hasattr(b, "text"))
-    # Strip markdown fences if Claude adds them despite instructions
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.I)
     raw = re.sub(r"\s*```$", "", raw.strip())
     return json.loads(raw)

@@ -85,15 +85,15 @@ async def _persist_onboard_result(
         )
         saved["company_fields"] = ", ".join(updates.keys())
 
-    # 2. Persist recent quarters — only insert if no existing post_brief
+    # 2. Persist recent quarters — qualitative data only (no revenue/EPS/EBIT)
+    #    Quantitative numbers come from the Bloomberg model upload.
     quarters: List[Dict[str, Any]] = result.get("recent_quarters", [])
 
-    # Sort quarters descending so we know which is the most recent
     def _sort_key(q: Dict) -> str:
         fp = q.get("fiscal_period", "Q0-0000")
         try:
             parts = fp.split("-")
-            return f"{parts[1]}{parts[0]}"  # e.g. "2026Q2"
+            return f"{parts[1]}{parts[0]}"
         except Exception:
             return fp
 
@@ -106,57 +106,41 @@ async def _persist_onboard_result(
         if not fp or fp == "Q?-????":
             continue
 
-        # Skip if a full brief already exists for this period
+        is_latest = (fp == most_recent_fp)
+
+        # post_brief holds qualitative fields; never overwrite quantitative data
+        post_brief_data: Dict[str, Any] = {
+            "mgmt_tone": q.get("mgmt_tone"),
+            "guidance_tone": q.get("guidance_tone"),
+            "guidance_detail": q.get("guidance_detail"),
+            "beat_miss": q.get("beat_miss"),
+            "post_brief": result.get("latest_earnings_summary") if is_latest else None,
+        }
+
+        q_highlights = q.get("key_highlights") or []
+        q_red_flags = q.get("red_flags") or []
+
+        # Check what already exists — merge qualitative into existing row, don't overwrite numbers
         existing = await db.execute(
             text("SELECT post_brief FROM earnings WHERE ticker = :t AND fiscal_period = :fp"),
             {"t": ticker, "fp": fp},
         )
         existing_row = existing.mappings().first()
-        if existing_row and existing_row["post_brief"]:
-            continue
 
-        seg = q.get("segment_breakdown") or {}
-        is_latest = (fp == most_recent_fp)
+        if existing_row:
+            # Merge: keep existing post_brief quantitative data, add qualitative on top
+            existing_pb: Dict[str, Any] = {}
+            if existing_row["post_brief"]:
+                try:
+                    existing_pb = existing_row["post_brief"] if isinstance(existing_row["post_brief"], dict) else json.loads(existing_row["post_brief"])
+                except Exception:
+                    pass
+            existing_pb.update({k: v for k, v in post_brief_data.items() if v is not None})
+            post_brief_json = json.dumps(existing_pb)
+        else:
+            post_brief_json = json.dumps(post_brief_data)
 
-        # Build a rich post_brief with all financial data the agent extracted
-        ebit = q.get("ebit")
-        net_income = q.get("net_income")
-        revenue = q.get("revenue")
-        eps = q.get("eps")
-
-        ebit_margin = q.get("ebit_margin_pct")
-        if ebit_margin is None and ebit is not None and revenue and revenue > 0:
-            ebit_margin = round(ebit / revenue * 100, 1)
-
-        post_brief_data: Dict[str, Any] = {
-            "segment_breakdown": seg,
-            "mgmt_tone": q.get("mgmt_tone"),
-            "guidance_tone": q.get("guidance_tone"),
-            "guidance_detail": q.get("guidance_detail"),
-            "revenue_actual": revenue,
-            "eps_actual": eps,
-            "ebit": ebit,
-            "ebit_margin_pct": ebit_margin,
-            "net_income": net_income,
-            "free_cash_flow": q.get("free_cash_flow"),
-            "operating_cash_flow": q.get("operating_cash_flow"),
-            "capex": q.get("capex"),
-            "net_debt": q.get("net_debt"),
-            "order_intake": q.get("order_intake"),
-            "book_to_bill": q.get("book_to_bill"),
-            "yoy_revenue_growth_pct": q.get("yoy_revenue_growth_pct"),
-            "beat_miss": q.get("beat_miss"),
-            "post_brief": result.get("latest_earnings_summary") if is_latest else None,
-        }
-
-        # Per-quarter highlights/red_flags from the new schema
-        q_highlights = q.get("key_highlights") or []
-        q_red_flags = q.get("red_flags") or []
-
-        post_brief_json = json.dumps(post_brief_data)
         earnings_data: Dict[str, Any] = {
-            "revenue_actual": revenue,
-            "eps_actual": eps,
             "beat_miss": q.get("beat_miss"),
             "guidance_tone": q.get("guidance_tone"),
             "mgmt_tone": q.get("mgmt_tone"),

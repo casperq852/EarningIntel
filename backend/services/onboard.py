@@ -1,12 +1,15 @@
 """
-Company onboarding agent — Claude orchestrates web research via tool use.
+Company onboarding agent — qualitative research only.
 
-Claude is given two tools (search_web, fetch_page) and asked to:
-  1. Find the IR website
-  2. Get the earnings calendar
-  3. Extract the last 2-3 quarters of results + segment data
-  4. Identify sector-specific KPIs
-  5. Give a qualitative assessment of the latest results
+Quantitative numbers (revenue, EPS, EBIT, margins) come from the Bloomberg
+analyst model upload. This agent handles everything that Bloomberg can't:
+
+  1. Find the official IR website
+  2. Find the next earnings date
+  3. Identify sector-specific KPIs to track
+  4. Extract qualitative assessment of the latest 1-2 earnings releases
+     (management tone, strategic themes, guidance narrative, red flags)
+  5. Write a company overview
 
 Returns structured JSON consumed by the onboard router.
 """
@@ -24,16 +27,15 @@ MODEL = "claude-sonnet-4-20250514"
 MAX_TOOL_ROUNDS = 16
 
 # ---------------------------------------------------------------------------
-# Tool definitions given to Claude
+# Tool definitions
 # ---------------------------------------------------------------------------
 
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "search_web",
         "description": (
-            "Search the web. Use specific queries to find official investor relations pages, "
-            "earnings press releases, and financial presentations. "
-            "Avoid using vague queries — be specific about company, period, and document type."
+            "Search the web. Use specific queries to find official investor relations pages "
+            "and earnings press releases. Be specific about company, period, and document type."
         ),
         "input_schema": {
             "type": "object",
@@ -47,7 +49,7 @@ TOOLS: List[Dict[str, Any]] = [
         "name": "fetch_page",
         "description": (
             "Fetch and extract text from a URL (HTML page or PDF). "
-            "Use this to read official IR pages, press releases, annual reports, and presentations. "
+            "Use this to read official IR pages, press releases, and presentations. "
             "Returns up to 12,000 characters of extracted text."
         ),
         "input_schema": {
@@ -60,68 +62,54 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
-_SYSTEM = """You are a senior equity research analyst onboarding a new company for coverage. \
-You have two tools: search_web and fetch_page. Use them to research the company thoroughly.
+_SYSTEM = """You are a senior equity research analyst onboarding a new company for coverage.
+You have two tools: search_web and fetch_page.
+
+Your goal is QUALITATIVE research only. You do NOT need to extract revenue, EPS, EBIT,
+or other financial numbers — those come from a separate Bloomberg data upload.
+
+Focus on:
+- Finding the IR website and next earnings date
+- Understanding what this company does and what drives its business
+- Identifying which KPIs specialist analysts track for this sector
+- Reading the most recent 1-2 earnings releases for management tone,
+  strategic narrative, guidance language, and risks
 
 Research methodology:
-1. Search for the company's official investor relations website
-2. Fetch the IR landing page to find links to recent earnings press releases and PDF reports
-3. CRITICAL: Always try to fetch the actual PDF press release — PDFs contain the full financial tables \
-with segment revenue, margins, and YoY comparisons that HTML pages often lack. \
-Look for .pdf links in IR pages or search specifically for "{company} Q{n} {year} earnings press release PDF".
-4. If an HTML press release lacks segment data, search explicitly for the PDF: \
-"{company} annual report OR earnings report filetype:pdf site:{ir_domain}"
-5. Extract divisional/segment breakdowns which are critical for industrial, pharma, and tech companies
+1. Search for and fetch the IR landing page (gives you the IR URL and often the calendar)
+2. Find and fetch the most recent earnings press release or results announcement
+   (HTML summary is fine — you do NOT need the full PDF financial tables)
+3. If available, also read the prior quarter's release for trend context
+4. Return JSON as soon as you have the IR URL, company overview, KPIs, and
+   qualitative data for at least one recent quarter
 
-Document fetching priority:
-- PDF press releases > HTML press releases > investor presentations > IR summary pages
-- For European companies (XETRA, Euronext, LSE), check the IR page for "Results" or "Financial Reports" PDF section
-- Segment data is almost always in a PDF — do not give up after a single HTML fetch
-
-Always prefer official company IR pages over news aggregators, analyst sites, or financial databases.
-
-IMPORTANT — return JSON as soon as you have:
-- The IR URL
-- At least ONE quarter of financial data
-- A company overview and KPI list
-
-Do NOT keep searching trying to perfect every field. Null values are fine for missing fields.
-Never fetch aggregator sites (coincodex, macrotrends, wisesheets, stockanalysis, etc) — they waste rounds.
-After fetching any PDF press release, return the JSON immediately if you have data for 1+ quarters."""
+Never fetch aggregator sites (coincodex, macrotrends, wisesheets, stockanalysis, etc).
+Never spend more than 2 rounds trying to find a single document — move on."""
 
 _OUTPUT_SCHEMA = """{
-  "ir_url": "string — official IR URL, e.g. https://www.infineon.com/cms/en/about-infineon/investor/",
+  "ir_url": "https://ir.company.com/",
   "next_earnings_date": "YYYY-MM-DD or null",
-  "custom_kpis": ["snake_case_kpi", ...],
+  "custom_kpis": ["snake_case_kpi_1", "snake_case_kpi_2"],
   "recent_quarters": [
     {
       "fiscal_period": "Q2-2026",
-      "revenue": 4580.0,
-      "ebit": 820.0,
-      "ebit_margin_pct": 17.9,
-      "net_income": 580.0,
-      "eps": 0.58,
-      "free_cash_flow": 420.0,
-      "operating_cash_flow": 510.0,
-      "capex": 90.0,
-      "net_debt": 1200.0,
-      "order_intake": 5100.0,
-      "book_to_bill": 1.11,
-      "yoy_revenue_growth_pct": 8.5,
       "beat_miss": "beat | miss | in_line | null",
       "guidance_tone": "raised | maintained | lowered | withdrawn | null",
       "mgmt_tone": "positive | neutral | cautious | negative",
-      "guidance_detail": "text describing what guidance was given, or null",
-      "segment_breakdown": {
-        "SegmentName": {"revenue": 1200, "margin_pct": 18.5, "yoy_growth_pct": 5.0}
-      },
-      "key_highlights": ["bullet 1", "bullet 2", "bullet 3"],
-      "red_flags": ["risk or concern 1"]
+      "guidance_detail": "Concise description of what management guided for, or null",
+      "key_highlights": [
+        "Bullet point 1 — qualitative theme, strategic win, or operational milestone",
+        "Bullet point 2",
+        "Bullet point 3"
+      ],
+      "red_flags": [
+        "Risk or concern raised by management or visible in the release"
+      ]
     }
   ],
-  "company_overview": "2–3 sentence plain-language description of what this company does",
-  "kpi_rationale": "Why these specific KPIs matter for analysts covering this company",
-  "latest_earnings_summary": "3–4 sentence qualitative assessment of the most recent results — management tone, strategic themes, key risks"
+  "company_overview": "2-3 sentence plain-language description of what this company does, its end markets, and competitive position",
+  "kpi_rationale": "Why these specific KPIs matter for analysts covering this sector/company",
+  "latest_earnings_summary": "3-4 sentence qualitative assessment of the most recent results: management tone, key strategic themes, main risks, and what to watch next quarter"
 }"""
 
 
@@ -144,16 +132,14 @@ async def _exec_fetch(url: str) -> str:
         return "Blocked: this domain is an aggregator or news site. Fetch a different URL."
     try:
         _, text, mime_type = await _fetch_document(url, timeout=30.0)
-        # For HTML pages: surface any .pdf links so the agent can follow them
         if "html" in mime_type:
             pdf_links = re.findall(r'https?://[^\s"\'<>]+\.pdf[^\s"\'<>]*', text, re.I)
-            unique_pdfs = list(dict.fromkeys(pdf_links))[:8]
+            unique_pdfs = list(dict.fromkeys(pdf_links))[:6]
             suffix = ""
             if unique_pdfs:
-                suffix = "\n\nPDF links found on this page (fetch these for full financial tables):\n" + "\n".join(f"- {u}" for u in unique_pdfs)
+                suffix = "\n\nPDF links found (fetch if you need the full release text):\n" + "\n".join(f"- {u}" for u in unique_pdfs)
             return f"[{mime_type}] {url}\n\n{text[:11_000]}{suffix}"
-        snippet = text[:12_000]
-        return f"[{mime_type}] {url}\n\n{snippet}"
+        return f"[{mime_type}] {url}\n\n{text[:12_000]}"
     except Exception as e:
         return f"Fetch error: {e}"
 
@@ -170,62 +156,52 @@ async def run_onboard_agent(
     sector: str,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Async generator that yields event dicts:
+    Async generator — yields:
       {"type": "progress", "message": str}
       {"type": "tool_call", "tool": str, "input": str}
       {"type": "tool_result", "tool": str, "preview": str}
       {"type": "done", "data": dict}
       {"type": "error", "message": str}
     """
-    prompt = f"""Research {company_name} ({ticker}{', ' + exchange if exchange else ''}) for equity coverage.
+    prompt = f"""Research {company_name} ({ticker}{', ' + exchange if exchange else ''}) for equity coverage initiation.
 Sector: {sector or 'not specified'}
 
-Tasks — complete ALL of them before returning JSON:
+Complete ALL tasks below, then return JSON:
 
-1. EARNINGS CALENDAR (max 3 tool calls — find the IR financial calendar page)
-   Search for or fetch the IR calendar/financial-calendar page and extract:
-   - The most recent past earnings release date
-   - The next scheduled earnings release date
-   Strategy: first try fetching the IR landing page (you'll fetch it anyway for task 2).
-   If the calendar dates are visible there, use them. If not, do ONE search for
-   "{{company}} earnings calendar investor relations" and fetch the result.
-   Stop after 3 attempts total. If still not found, set next_earnings_date to null and move on.
+1. IR WEBSITE & EARNINGS CALENDAR (1-3 tool calls)
+   - Find the official investor relations URL
+   - From the IR landing page or calendar page, find the next scheduled earnings date
+   - If not visible after 2 attempts, set next_earnings_date to null
 
-2. IR WEBSITE
-   Find the official investor relations URL.
-   This must be a direct link to the company's own IR section, not an aggregator.
+2. COMPANY OVERVIEW
+   Write 2-3 sentences: what the company does, key end markets, competitive position.
+   You can derive this from the IR landing page alone — no need for extra fetches.
 
-3. RECENT FINANCIALS (fetch the PDF press release — HTML pages rarely have full tables)
-   For each of the last 2–3 quarters, extract from the actual press release PDF:
-   - Revenue (reported currency, millions or billions — convert to millions in JSON)
-   - EBIT / Operating Profit and margin %
-   - Net income and EPS (basic or diluted)
-   - Free cash flow and operating cash flow if disclosed
-   - Net debt / net cash position
-   - YoY revenue growth % (comparable basis if stated)
-   - Segment / divisional breakdown: each segment's revenue, profit margin %, YoY growth %
-     (This is usually in a table in the PDF — look for "Segment results", "Divisional performance",
-      "Business unit overview", or similar. This is critical for industrial, tech, and pharma companies.)
-   - Order intake / bookings and book-to-bill ratio if reported
-   - 3–5 key highlights as bullet points
+3. SECTOR KPIs
+   For a {sector or 'diversified'} company, name 3-5 operational KPIs that specialist
+   analysts track beyond standard P&L lines. Use snake_case names. Examples:
+   - Semiconductors: book_to_bill, order_backlog_bn, capacity_utilisation_pct
+   - Industrials: order_intake_bn, order_backlog_bn, organic_growth_pct
+   - Pharma: pipeline_assets, r_and_d_ratio_pct, key_drug_market_share_pct
+   - Banks: net_interest_margin_pct, cet1_ratio_pct, cost_to_income_pct
+   - Consumer: lfl_growth_pct, store_count, ecommerce_mix_pct
+
+4. QUALITATIVE EARNINGS ASSESSMENT (fetch 1-2 recent press releases)
+   For the most recent 1-2 quarters, read the earnings release and extract:
+   - Whether results beat, missed, or were in line with expectations (qualitative judgement)
+   - Guidance tone: did management raise, maintain, lower, or withdraw guidance?
+   - Management tone: positive / neutral / cautious / negative
+   - 3-5 key highlights as concise bullet points (themes, wins, strategic milestones)
    - Any red flags or risks mentioned
-   - Guidance detail text (what management said about the outlook)
+   - What management said about the outlook (guidance_detail)
 
-4. COMPANY-SPECIFIC KPIs
-   For a {sector or 'diversified'} company, what 3–5 operational metrics do specialist analysts track
-   beyond standard P&L lines? Examples:
-   - Semiconductors: book-to-bill, order backlog, capacity utilisation
-   - Industrials: order intake, order backlog, equipment utilisation
-   - Pharma: pipeline stage counts, market share by drug, R&D spend ratio
-   - Banks: NIM, CET1 ratio, cost-to-income ratio, NPL ratio
-   - Consumer: like-for-like sales growth, store count, e-commerce mix
-   Name them in snake_case (e.g. book_to_bill, order_backlog_bn).
+   IMPORTANT: Do NOT extract revenue, EPS, EBIT, or financial figures.
+   Those will be populated separately from a Bloomberg data upload.
+   Focus purely on narrative, tone, and qualitative signals.
 
-5. LATEST QUALITATIVE ASSESSMENT
-   Based on the most recent earnings release or call transcript:
-   - Management tone (positive/neutral/cautious/negative)
-   - 2–3 key strategic themes mentioned
-   - Main risks or concerns raised
+5. LATEST EARNINGS SUMMARY
+   Write a 3-4 sentence qualitative assessment of the most recent quarter:
+   management tone, key strategic themes, main risks, what to watch next quarter.
 
 Return ONLY valid JSON matching this exact schema — no other text:
 {_OUTPUT_SCHEMA}"""
@@ -238,7 +214,7 @@ Return ONLY valid JSON matching this exact schema — no other text:
         try:
             response = await client.messages.create(
                 model=MODEL,
-                max_tokens=6000,
+                max_tokens=4000,
                 system=_SYSTEM,
                 tools=TOOLS,
                 messages=messages,

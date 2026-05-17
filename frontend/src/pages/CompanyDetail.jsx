@@ -166,9 +166,9 @@ function BloombergModelUpload({ ticker, onDone }) {
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="text-left px-3 py-2 font-semibold text-gray-500">Period</th>
                     <th className="text-right px-3 py-2 font-semibold text-gray-500">Type</th>
-                    <th className="text-right px-3 py-2 font-semibold text-gray-500">Revenue est</th>
-                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EBIT est</th>
-                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EPS est</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">Revenue</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EBIT</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EPS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -181,13 +181,13 @@ function BloombergModelUpload({ ticker, onDone }) {
                         </span>
                       </td>
                       <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
-                        {q.revenue_est != null ? `€${(q.revenue_est >= 1000 ? `${(q.revenue_est/1000).toFixed(1)}bn` : `${q.revenue_est.toFixed(0)}m`)}` : '—'}
+                        {q.revenue != null ? `${result.currency || ''}${q.revenue >= 1000 ? `${(q.revenue/1000).toFixed(1)}bn` : `${Math.round(q.revenue)}m`}` : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
-                        {q.ebit_est != null ? `€${(q.ebit_est >= 1000 ? `${(q.ebit_est/1000).toFixed(1)}bn` : `${q.ebit_est.toFixed(0)}m`)}` : '—'}
+                        {q.ebit != null ? `${result.currency || ''}${q.ebit >= 1000 ? `${(q.ebit/1000).toFixed(1)}bn` : `${Math.round(q.ebit)}m`}` : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
-                        {q.eps_est != null ? q.eps_est.toFixed(2) : '—'}
+                        {q.eps != null ? q.eps.toFixed(2) : '—'}
                       </td>
                     </tr>
                   ))}
@@ -528,6 +528,16 @@ export default function CompanyDetail() {
   const latestEarnings = earnings[0]
   const latestBrief = latestEarnings?.post_brief || latestEarnings?.pre_brief
 
+  // Bloomberg banner logic
+  const hasAnyActuals = earnings.some((e) => e.revenue_actual != null)
+  const today = new Date()
+  const pastEarnings = earnings.filter((e) => {
+    if (!e.report_date) return false
+    return new Date(e.report_date) <= today
+  })
+  const latestPastMissingActuals = pastEarnings.length > 0 && pastEarnings[0].revenue_actual == null
+  const showBloombergBanner = !hasAnyActuals || latestPastMissingActuals
+
   const refreshAll = () => {
     Promise.all([getCompany(ticker), getEarnings(ticker)]).then(([co, earn]) => {
       setCompany(co)
@@ -586,6 +596,31 @@ export default function CompanyDetail() {
         </div>
       )}
 
+      {/* Bloomberg data banner */}
+      {showBloombergBanner && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-amber-500 text-xl flex-shrink-0">⚠</span>
+            <div>
+              <div className="text-sm font-semibold text-amber-800">
+                {!hasAnyActuals
+                  ? 'Financial data not yet uploaded'
+                  : 'New earnings available — upload updated model'}
+              </div>
+              <div className="text-xs text-amber-600 mt-0.5">
+                Upload the Bloomberg aggregate analyst model (.xlsx) to populate quarterly revenue, EBIT, EPS estimates and actuals.
+              </div>
+            </div>
+          </div>
+          <a
+            href="#bloomberg-upload"
+            className="shrink-0 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            Upload model ↓
+          </a>
+        </div>
+      )}
+
       {/* Alphie Analyst Research */}
       <AlphieResearch ticker={ticker} />
 
@@ -593,7 +628,9 @@ export default function CompanyDetail() {
       <ResearchPanel ticker={ticker} onDone={refreshAll} />
 
       {/* Bloomberg Model Upload */}
-      <BloombergModelUpload ticker={ticker} onDone={refreshAll} />
+      <div id="bloomberg-upload">
+        <BloombergModelUpload ticker={ticker} onDone={refreshAll} />
+      </div>
 
       {/* KPI Trend Chart */}
       {chartData.length > 0 && chartKpis.length > 0 && (

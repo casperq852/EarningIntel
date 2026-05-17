@@ -232,8 +232,9 @@ async def upload_analyst_model(
 ):
     """
     Upload a Bloomberg aggregate analyst model (.xlsx).
-    Claude parses the file and saves consensus estimates into the earnings table.
-    Returns a summary of what was parsed and saved.
+    Historical actuals → saved to revenue_actual, eps_actual, post_brief (EBIT/net income).
+    Forward consensus estimates → saved to revenue_est, eps_est, ebit_est, net_income_est.
+    Both populate analyst_estimates JSONB for the chat panel.
     """
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Please upload an .xlsx file exported from Bloomberg.")
@@ -242,7 +243,6 @@ async def upload_analyst_model(
     if not api_key:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
 
-    # Check company exists
     result = await db.execute(
         text("SELECT name FROM companies WHERE ticker = :t"),
         {"t": ticker.upper()},
@@ -252,14 +252,14 @@ async def upload_analyst_model(
         raise HTTPException(status_code=404, detail=f"Company {ticker} not found")
 
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:  # 10 MB guard
+    if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
 
     from services.model_parser import parse_bloomberg_model
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    anthro = anthropic.AsyncAnthropic(api_key=api_key)
 
     try:
-        parsed = await parse_bloomberg_model(client, content, file.filename)
+        parsed = await parse_bloomberg_model(anthro, content, file.filename)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse file: {e}")
 
@@ -273,116 +273,147 @@ async def upload_analyst_model(
         if not fp:
             continue
 
-        # Build update data — only set fields that Claude found
-        update: Dict[str, Any] = {}
-        if q.get("revenue_est") is not None:
-            update["revenue_est"] = q["revenue_est"]
-        if q.get("ebit_est") is not None:
-            update["ebit_est"] = q["ebit_est"]
-        if q.get("net_income_est") is not None:
-            update["net_income_est"] = q["net_income_est"]
-        if q.get("eps_est") is not None:
-            update["eps_est"] = q["eps_est"]
+        is_estimate = q.get("is_estimate", True)
+        segment_breakdown = q.get("segment_breakdown") or {}
 
-        # Store the full per-quarter model data as JSONB
-        update["analyst_estimates"] = json.dumps({
-            "source": "bloomberg",
-            "currency": currency,
-            "is_estimate": q.get("is_estimate", True),
-            "analyst_count": q.get("analyst_count"),
-            "ebit_margin_est": q.get("ebit_margin_est"),
-            **{k: v for k, v in (q.get("extra") or {}).items()},
-        })
-        update["data_source"] = "bloomberg_model"
-
-        if not update:
-            skipped.append(fp)
-            continue
-
-        # Derive fiscal_year / fiscal_quarter from period string
+        # Derive fiscal year/quarter
+        fiscal_year: Optional[int] = None
+        fiscal_quarter: Optional[int] = None
         try:
             parts = fp.split("-")
             fiscal_year = int(parts[1])
             fiscal_quarter = int(parts[0][1])
         except Exception:
-            fiscal_year = None
-            fiscal_quarter = None
+            pass
 
-        # Upsert: create stub if period doesn't exist yet, else update estimates only
-        check = await db.execute(
-            text("SELECT id FROM earnings WHERE ticker = :t AND fiscal_period = :fp"),
+        # Fetch existing row so we can merge safely
+        existing_result = await db.execute(
+            text("SELECT id, post_brief, revenue_actual FROM earnings WHERE ticker = :t AND fiscal_period = :fp"),
             {"t": ticker.upper(), "fp": fp},
         )
-        exists = check.scalar()
+        existing = existing_result.mappings().first()
 
-        if exists:
-            set_clauses = []
-            for k in update:
-                if k == "analyst_estimates":
-                    set_clauses.append(f"{k} = CAST(:{k} AS jsonb)")
-                else:
-                    set_clauses.append(f"{k} = :{k}")
-            await db.execute(
-                text(f"UPDATE earnings SET {', '.join(set_clauses)} WHERE ticker = :t AND fiscal_period = :fp"),
-                {"t": ticker.upper(), "fp": fp, **update},
-            )
-        else:
-            insert_data: Dict[str, Any] = {
+        # Build merged post_brief — preserve existing qualitative fields
+        existing_pb: Dict[str, Any] = {}
+        if existing and existing["post_brief"]:
+            try:
+                existing_pb = existing["post_brief"] if isinstance(existing["post_brief"], dict) else json.loads(existing["post_brief"])
+            except Exception:
+                pass
+
+        # Full analyst_estimates blob for chat context
+        analyst_estimates_blob = {
+            "source": "bloomberg",
+            "currency": currency,
+            "is_estimate": is_estimate,
+            "analyst_count": q.get("analyst_count"),
+            "ebit_margin_pct": q.get("ebit_margin_pct"),
+            "ebitda_margin_pct": q.get("ebitda_margin_pct"),
+            **(q.get("extra") or {}),
+        }
+
+        if not is_estimate:
+            # Historical actual — populate revenue_actual, eps_actual, and financials in post_brief
+            existing_pb.update({k: v for k, v in {
+                "ebit": q.get("ebit"),
+                "ebitda": q.get("ebitda"),
+                "ebit_margin_pct": q.get("ebit_margin_pct"),
+                "ebitda_margin_pct": q.get("ebitda_margin_pct"),
+                "net_income": q.get("net_income"),
+                "segment_breakdown": segment_breakdown if segment_breakdown else existing_pb.get("segment_breakdown"),
+            }.items() if v is not None})
+
+            upsert_params: Dict[str, Any] = {
                 "t": ticker.upper(),
                 "fp": fp,
-                **update,
+                "revenue_actual": q.get("revenue"),
+                "eps_actual": q.get("eps"),
+                "post_brief": json.dumps(existing_pb),
+                "analyst_estimates": json.dumps(analyst_estimates_blob),
+                "data_source": "bloomberg_model",
+                "fy": fiscal_year,
+                "fq": fiscal_quarter,
             }
-            extra_cols = ""
-            extra_vals = ""
-            if fiscal_year is not None:
-                insert_data["fy"] = fiscal_year
-                insert_data["fq"] = fiscal_quarter
-                extra_cols = ", fiscal_year, fiscal_quarter"
-                extra_vals = ", :fy, :fq"
-
-            ae_cast = "CAST(:analyst_estimates AS jsonb)" if "analyst_estimates" in update else "'{}'::jsonb"
             await db.execute(
-                text(f"""
+                text("""
                     INSERT INTO earnings
-                      (ticker, fiscal_period, revenue_est, ebit_est, net_income_est,
-                       eps_est, analyst_estimates, data_source,
-                       key_highlights, red_flags, custom_kpis{extra_cols})
+                      (ticker, fiscal_period, revenue_actual, eps_actual, post_brief,
+                       analyst_estimates, data_source, fiscal_year, fiscal_quarter,
+                       key_highlights, red_flags, custom_kpis)
                     VALUES
-                      (:t, :fp, :revenue_est, :ebit_est, :net_income_est,
-                       :eps_est, {ae_cast}, :data_source,
-                       '[]'::jsonb, '[]'::jsonb, '{{}}'::jsonb{extra_vals})
+                      (:t, :fp, :revenue_actual, :eps_actual, CAST(:post_brief AS jsonb),
+                       CAST(:analyst_estimates AS jsonb), :data_source, :fy, :fq,
+                       '[]'::jsonb, '[]'::jsonb, '{}'::jsonb)
                     ON CONFLICT (ticker, fiscal_period) DO UPDATE SET
-                      revenue_est = EXCLUDED.revenue_est,
-                      ebit_est = EXCLUDED.ebit_est,
-                      net_income_est = EXCLUDED.net_income_est,
-                      eps_est = EXCLUDED.eps_est,
-                      analyst_estimates = EXCLUDED.analyst_estimates,
-                      data_source = EXCLUDED.data_source
+                      revenue_actual = COALESCE(EXCLUDED.revenue_actual, earnings.revenue_actual),
+                      eps_actual     = COALESCE(EXCLUDED.eps_actual, earnings.eps_actual),
+                      post_brief     = CAST(:post_brief AS jsonb),
+                      analyst_estimates = CAST(:analyst_estimates AS jsonb),
+                      data_source    = EXCLUDED.data_source,
+                      fiscal_year    = COALESCE(EXCLUDED.fiscal_year, earnings.fiscal_year),
+                      fiscal_quarter = COALESCE(EXCLUDED.fiscal_quarter, earnings.fiscal_quarter)
                 """),
-                {
-                    "revenue_est": update.get("revenue_est"),
-                    "ebit_est": update.get("ebit_est"),
-                    "net_income_est": update.get("net_income_est"),
-                    "eps_est": update.get("eps_est"),
-                    **{k: v for k, v in insert_data.items()},
-                },
+                upsert_params,
+            )
+
+        else:
+            # Forward estimate — populate *_est fields
+            upsert_params = {
+                "t": ticker.upper(),
+                "fp": fp,
+                "revenue_est": q.get("revenue"),
+                "eps_est": q.get("eps"),
+                "ebit_est": q.get("ebit"),
+                "net_income_est": q.get("net_income"),
+                "analyst_estimates": json.dumps(analyst_estimates_blob),
+                "data_source": "bloomberg_model",
+                "fy": fiscal_year,
+                "fq": fiscal_quarter,
+            }
+            await db.execute(
+                text("""
+                    INSERT INTO earnings
+                      (ticker, fiscal_period, revenue_est, eps_est, ebit_est, net_income_est,
+                       analyst_estimates, data_source, fiscal_year, fiscal_quarter,
+                       key_highlights, red_flags, custom_kpis)
+                    VALUES
+                      (:t, :fp, :revenue_est, :eps_est, :ebit_est, :net_income_est,
+                       CAST(:analyst_estimates AS jsonb), :data_source, :fy, :fq,
+                       '[]'::jsonb, '[]'::jsonb, '{}'::jsonb)
+                    ON CONFLICT (ticker, fiscal_period) DO UPDATE SET
+                      revenue_est    = COALESCE(EXCLUDED.revenue_est, earnings.revenue_est),
+                      eps_est        = COALESCE(EXCLUDED.eps_est, earnings.eps_est),
+                      ebit_est       = COALESCE(EXCLUDED.ebit_est, earnings.ebit_est),
+                      net_income_est = COALESCE(EXCLUDED.net_income_est, earnings.net_income_est),
+                      analyst_estimates = CAST(:analyst_estimates AS jsonb),
+                      data_source    = EXCLUDED.data_source,
+                      fiscal_year    = COALESCE(EXCLUDED.fiscal_year, earnings.fiscal_year),
+                      fiscal_quarter = COALESCE(EXCLUDED.fiscal_quarter, earnings.fiscal_quarter)
+                """),
+                upsert_params,
             )
 
         saved.append({
             "fiscal_period": fp,
-            "is_estimate": q.get("is_estimate", True),
-            "revenue_est": q.get("revenue_est"),
-            "ebit_est": q.get("ebit_est"),
-            "eps_est": q.get("eps_est"),
+            "is_estimate": is_estimate,
+            "revenue": q.get("revenue"),
+            "ebit": q.get("ebit"),
+            "eps": q.get("eps"),
+            "has_segments": bool(segment_breakdown),
         })
 
     await db.commit()
+
+    actuals_saved = [s for s in saved if not s["is_estimate"]]
+    estimates_saved = [s for s in saved if s["is_estimate"]]
 
     return {
         "ticker": ticker.upper(),
         "company": row["name"],
         "currency": currency,
         "parsed_periods": len(quarters),
+        "actuals_saved": len(actuals_saved),
+        "estimates_saved": len(estimates_saved),
         "saved": saved,
         "skipped": skipped,
     }
