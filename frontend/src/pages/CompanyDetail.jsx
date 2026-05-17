@@ -70,6 +70,144 @@ function ToolCallLine({ event }) {
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Bloomberg model upload
+// ---------------------------------------------------------------------------
+
+function BloombergModelUpload({ ticker, onDone }) {
+  const [status, setStatus] = useState('idle') // idle | uploading | done | error
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const fileRef = useRef(null)
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setStatus('uploading')
+    setResult(null)
+    setError('')
+
+    const form = new FormData()
+    form.append('file', file)
+
+    try {
+      const res = await client.post(`/companies/${ticker}/upload-model`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setResult(res.data)
+      setStatus('done')
+      onDone()
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message)
+      setStatus('error')
+    } finally {
+      // Reset file input so the same file can be re-uploaded
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-gray-800">Bloomberg Analyst Model</h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Upload the aggregate analyst model .xlsx from Bloomberg — Claude will extract consensus estimates per quarter.
+          </p>
+        </div>
+
+        <label className={`shrink-0 cursor-pointer flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          status === 'uploading'
+            ? 'bg-gray-100 text-gray-400 pointer-events-none'
+            : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+        }`}>
+          {status === 'uploading' ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Parsing…
+            </>
+          ) : (
+            <>↑ Upload .xlsx</>
+          )}
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={handleFile}
+            disabled={status === 'uploading'}
+          />
+        </label>
+      </div>
+
+      {status === 'error' && (
+        <div className="mt-3 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {status === 'done' && result && (
+        <div className="mt-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm text-emerald-700 font-medium">
+            <span>✓</span>
+            <span>
+              Parsed {result.parsed_periods} period{result.parsed_periods !== 1 ? 's' : ''} · saved {result.saved?.length ?? 0}
+              {result.currency ? ` · ${result.currency}` : ''}
+            </span>
+          </div>
+
+          {result.saved?.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-100">
+                    <th className="text-left px-3 py-2 font-semibold text-gray-500">Period</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">Type</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">Revenue est</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EBIT est</th>
+                    <th className="text-right px-3 py-2 font-semibold text-gray-500">EPS est</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {result.saved.map((q) => (
+                    <tr key={q.fiscal_period} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 font-mono font-medium text-gray-800">{q.fiscal_period}</td>
+                      <td className="px-3 py-2 text-right">
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${q.is_estimate ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                          {q.is_estimate ? 'Est' : 'Actual'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
+                        {q.revenue_est != null ? `€${(q.revenue_est >= 1000 ? `${(q.revenue_est/1000).toFixed(1)}bn` : `${q.revenue_est.toFixed(0)}m`)}` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
+                        {q.ebit_est != null ? `€${(q.ebit_est >= 1000 ? `${(q.ebit_est/1000).toFixed(1)}bn` : `${q.ebit_est.toFixed(0)}m`)}` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-700 tabular-nums">
+                        {q.eps_est != null ? q.eps_est.toFixed(2) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <button
+            onClick={() => setStatus('idle')}
+            className="text-xs text-gray-400 hover:text-gray-600"
+          >
+            Upload another file
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AlphieResearch({ ticker }) {
   const [state, setState] = useState('idle') // idle | loading | done | error
   const [data, setData] = useState(null)
@@ -453,6 +591,9 @@ export default function CompanyDetail() {
 
       {/* Research Panel */}
       <ResearchPanel ticker={ticker} onDone={refreshAll} />
+
+      {/* Bloomberg Model Upload */}
+      <BloombergModelUpload ticker={ticker} onDone={refreshAll} />
 
       {/* KPI Trend Chart */}
       {chartData.length > 0 && chartKpis.length > 0 && (

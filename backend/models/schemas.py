@@ -62,6 +62,9 @@ class EarningsBase(BaseModel):
     eps_actual: Optional[float] = None
     eps_est: Optional[float] = None
     eps_surprise_pct: Optional[float] = None
+    ebit_est: Optional[float] = None
+    net_income_est: Optional[float] = None
+    analyst_estimates: Optional[Dict[str, Any]] = None
     beat_miss: Optional[str] = None  # 'beat', 'miss', 'in_line'
     guidance_tone: Optional[str] = None
     mgmt_tone: Optional[str] = None

@@ -667,6 +667,12 @@ export default function EarningsDetail() {
           </div>
           <MetricRow label="Revenue" actual={earnings.revenue_actual} estimate={earnings.revenue_est} surprisePct={earnings.revenue_surprise_pct} />
           <MetricRow label="EPS" actual={earnings.eps_actual} estimate={earnings.eps_est} surprisePct={earnings.eps_surprise_pct} />
+          {(earnings.ebit_est != null || postBrief?.ebit != null) && (
+            <MetricRow label="EBIT" actual={postBrief?.ebit ?? null} estimate={earnings.ebit_est} />
+          )}
+          {(earnings.net_income_est != null || postBrief?.net_income != null) && (
+            <MetricRow label="Net Income" actual={postBrief?.net_income ?? null} estimate={earnings.net_income_est} />
+          )}
           <div className="flex gap-6 mt-4 pt-4 border-t border-gray-50">
             <div><div className="text-xs text-gray-400 mb-1">Mgmt Tone</div><ToneBadge value={earnings.mgmt_tone} type="mgmt" /></div>
             <div><div className="text-xs text-gray-400 mb-1">Guidance</div><ToneBadge value={earnings.guidance_tone} type="guidance" /></div>

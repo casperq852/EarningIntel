@@ -4,9 +4,11 @@ Companies router.
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+import os
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import anthropic
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -216,3 +218,171 @@ async def ingest_company_docs(ticker: str, db: AsyncSession = Depends(get_db)):
             results.append({"url": doc["source_url"], "status": "error", "error": str(e)})
 
     return {"ticker": ticker.upper(), "ingested": len([r for r in results if r["status"] == "ok"]), "results": results}
+
+
+# ---------------------------------------------------------------------------
+# Bloomberg model upload
+# ---------------------------------------------------------------------------
+
+@router.post("/{ticker}/upload-model")
+async def upload_analyst_model(
+    ticker: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload a Bloomberg aggregate analyst model (.xlsx).
+    Claude parses the file and saves consensus estimates into the earnings table.
+    Returns a summary of what was parsed and saved.
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Please upload an .xlsx file exported from Bloomberg.")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+    # Check company exists
+    result = await db.execute(
+        text("SELECT name FROM companies WHERE ticker = :t"),
+        {"t": ticker.upper()},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Company {ticker} not found")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB guard
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+
+    from services.model_parser import parse_bloomberg_model
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    try:
+        parsed = await parse_bloomberg_model(client, content, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {e}")
+
+    quarters = parsed.get("quarters") or []
+    currency = parsed.get("currency", "")
+    saved: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+
+    for q in quarters:
+        fp = q.get("fiscal_period")
+        if not fp:
+            continue
+
+        # Build update data — only set fields that Claude found
+        update: Dict[str, Any] = {}
+        if q.get("revenue_est") is not None:
+            update["revenue_est"] = q["revenue_est"]
+        if q.get("ebit_est") is not None:
+            update["ebit_est"] = q["ebit_est"]
+        if q.get("net_income_est") is not None:
+            update["net_income_est"] = q["net_income_est"]
+        if q.get("eps_est") is not None:
+            update["eps_est"] = q["eps_est"]
+
+        # Store the full per-quarter model data as JSONB
+        update["analyst_estimates"] = json.dumps({
+            "source": "bloomberg",
+            "currency": currency,
+            "is_estimate": q.get("is_estimate", True),
+            "analyst_count": q.get("analyst_count"),
+            "ebit_margin_est": q.get("ebit_margin_est"),
+            **{k: v for k, v in (q.get("extra") or {}).items()},
+        })
+        update["data_source"] = "bloomberg_model"
+
+        if not update:
+            skipped.append(fp)
+            continue
+
+        # Derive fiscal_year / fiscal_quarter from period string
+        try:
+            parts = fp.split("-")
+            fiscal_year = int(parts[1])
+            fiscal_quarter = int(parts[0][1])
+        except Exception:
+            fiscal_year = None
+            fiscal_quarter = None
+
+        # Upsert: create stub if period doesn't exist yet, else update estimates only
+        check = await db.execute(
+            text("SELECT id FROM earnings WHERE ticker = :t AND fiscal_period = :fp"),
+            {"t": ticker.upper(), "fp": fp},
+        )
+        exists = check.scalar()
+
+        if exists:
+            set_clauses = []
+            for k in update:
+                if k == "analyst_estimates":
+                    set_clauses.append(f"{k} = CAST(:{k} AS jsonb)")
+                else:
+                    set_clauses.append(f"{k} = :{k}")
+            await db.execute(
+                text(f"UPDATE earnings SET {', '.join(set_clauses)} WHERE ticker = :t AND fiscal_period = :fp"),
+                {"t": ticker.upper(), "fp": fp, **update},
+            )
+        else:
+            insert_data: Dict[str, Any] = {
+                "t": ticker.upper(),
+                "fp": fp,
+                **update,
+            }
+            extra_cols = ""
+            extra_vals = ""
+            if fiscal_year is not None:
+                insert_data["fy"] = fiscal_year
+                insert_data["fq"] = fiscal_quarter
+                extra_cols = ", fiscal_year, fiscal_quarter"
+                extra_vals = ", :fy, :fq"
+
+            ae_cast = "CAST(:analyst_estimates AS jsonb)" if "analyst_estimates" in update else "'{}'::jsonb"
+            await db.execute(
+                text(f"""
+                    INSERT INTO earnings
+                      (ticker, fiscal_period, revenue_est, ebit_est, net_income_est,
+                       eps_est, analyst_estimates, data_source,
+                       key_highlights, red_flags, custom_kpis{extra_cols})
+                    VALUES
+                      (:t, :fp, :revenue_est, :ebit_est, :net_income_est,
+                       :eps_est, {ae_cast}, :data_source,
+                       '[]'::jsonb, '[]'::jsonb, '{{}}'::jsonb{extra_vals})
+                    ON CONFLICT (ticker, fiscal_period) DO UPDATE SET
+                      revenue_est = EXCLUDED.revenue_est,
+                      ebit_est = EXCLUDED.ebit_est,
+                      net_income_est = EXCLUDED.net_income_est,
+                      eps_est = EXCLUDED.eps_est,
+                      analyst_estimates = EXCLUDED.analyst_estimates,
+                      data_source = EXCLUDED.data_source
+                """),
+                {
+                    "revenue_est": update.get("revenue_est"),
+                    "ebit_est": update.get("ebit_est"),
+                    "net_income_est": update.get("net_income_est"),
+                    "eps_est": update.get("eps_est"),
+                    **{k: v for k, v in insert_data.items()},
+                },
+            )
+
+        saved.append({
+            "fiscal_period": fp,
+            "is_estimate": q.get("is_estimate", True),
+            "revenue_est": q.get("revenue_est"),
+            "ebit_est": q.get("ebit_est"),
+            "eps_est": q.get("eps_est"),
+        })
+
+    await db.commit()
+
+    return {
+        "ticker": ticker.upper(),
+        "company": row["name"],
+        "currency": currency,
+        "parsed_periods": len(quarters),
+        "saved": saved,
+        "skipped": skipped,
+    }

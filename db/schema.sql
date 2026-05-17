@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS earnings (
     eps_actual              NUMERIC(10, 4),
     eps_est                 NUMERIC(10, 4),
     eps_surprise_pct        NUMERIC(10, 4),
+    ebit_est                NUMERIC(20, 4),
+    net_income_est          NUMERIC(20, 4),
+    analyst_estimates       JSONB DEFAULT '{}'::jsonb,
     beat_miss               VARCHAR(20),            -- 'beat', 'miss', 'in_line', null
     guidance_tone           VARCHAR(20),            -- 'raised', 'maintained', 'lowered', 'withdrawn', null
     mgmt_tone               VARCHAR(20),            -- 'positive', 'neutral', 'cautious', 'negative', null
