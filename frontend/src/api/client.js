@@ -1,6 +1,10 @@
 import axios from 'axios'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
+// If an explicit URL was baked in at build time, use it.
+// Otherwise derive from the current hostname so the same image works on any host.
+const BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  `${window.location.protocol}//${window.location.hostname}:8000`
 
 const client = axios.create({
   baseURL: BASE_URL,
