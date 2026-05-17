@@ -4,6 +4,7 @@ const NAV_LINKS = [
   { to: '/', label: 'Dashboard', exact: true },
   { to: '/companies', label: 'Companies' },
   { to: '/watchlist', label: 'Watchlist' },
+  { to: '/settings', label: 'Settings' },
 ]
 
 export default function NavBar() {

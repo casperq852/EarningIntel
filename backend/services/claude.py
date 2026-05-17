@@ -1,10 +1,8 @@
 """
-Claude synthesis service using the official Anthropic Python SDK.
-Model: claude-sonnet-4-20250514
+Claude synthesis service — delegates to services.llm for provider-agnostic calls.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -57,43 +55,26 @@ _PRE_BRIEF_SCHEMA = {
 
 
 class ClaudeService:
-    """Async Claude synthesis service with retry logic."""
+    """Synthesis service — delegates to llm.call_llm for provider-agnostic calls."""
 
-    MAX_RETRIES = 3
-
-    def __init__(self, api_key: Optional[str] = None):
-        self._api_key = api_key or _ANTHROPIC_API_KEY
-        self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
-
-    async def _call_with_retry(self, prompt: str, max_tokens: int = 4096) -> Dict[str, Any]:
-        """Call Claude with exponential backoff retry. Returns parsed JSON dict."""
-        last_error: Optional[Exception] = None
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                message = await self._client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=max_tokens,
-                    system=SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                raw_text = message.content[0].text.strip()
-                # Strip markdown code fences if present
-                if raw_text.startswith("```"):
-                    lines = raw_text.split("\n")
-                    raw_text = "\n".join(lines[1:-1]) if len(lines) > 2 else raw_text
-                return json.loads(raw_text)
-            except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
-                last_error = e
-                wait = 2 ** attempt
-                await asyncio.sleep(wait)
-            except json.JSONDecodeError as e:
-                last_error = e
-                await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                last_error = e
-                await asyncio.sleep(2 ** attempt)
-        raise RuntimeError(
-            f"Claude API call failed after {self.MAX_RETRIES} attempts: {last_error}"
+    async def _call(
+        self,
+        prompt: str,
+        max_tokens: int = 4096,
+        *,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from services.llm import call_llm
+        return await call_llm(
+            SYSTEM_PROMPT,
+            prompt,
+            provider=provider or "anthropic",
+            model=model or "claude-sonnet-4-20250514",
+            anthropic_api_key=_ANTHROPIC_API_KEY,
+            openrouter_api_key=openrouter_api_key,
+            max_tokens=max_tokens,
         )
 
     async def generate_post_brief(
@@ -110,6 +91,9 @@ class ClaudeService:
         transcript_chunks: Optional[str],
         custom_kpi_list: List[str],
         existing_context: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate a post-earnings brief from DB data (Bloomberg actuals + onboarding context).
@@ -156,7 +140,7 @@ class ClaudeService:
 Write a crisp, PM-ready brief. Use all available context above. Confirm or refine the beat_miss/mgmt_tone/guidance_tone fields based on the full picture.
 Respond with valid JSON only, no markdown, no preamble."""
 
-        return await self._call_with_retry(prompt, max_tokens=4096)
+        return await self._call(prompt, max_tokens=4096, model=model, provider=provider, openrouter_api_key=openrouter_api_key)
 
     async def generate_pre_brief(
         self,
@@ -170,6 +154,9 @@ Respond with valid JSON only, no markdown, no preamble."""
         custom_kpi_list: List[str],
         ebit_est: Optional[float] = None,
         company_overview: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate a pre-earnings brief from DB consensus estimates (Bloomberg) and prior actuals.
@@ -205,7 +192,7 @@ Respond with valid JSON only, no markdown, no preamble."""
 
 Respond with valid JSON only, no markdown, no preamble. In custom_kpis_est, provide consensus or derived estimates where possible, null otherwise."""
 
-        return await self._call_with_retry(prompt)
+        return await self._call(prompt, model=model, provider=provider, openrouter_api_key=openrouter_api_key)
 
     async def extract_from_ir_page(
         self,
@@ -213,6 +200,9 @@ Respond with valid JSON only, no markdown, no preamble. In custom_kpis_est, prov
         fiscal_period: str,
         page_text: str,
         custom_kpi_list: List[str],
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract structured earnings data from raw IR page / document text.
@@ -277,7 +267,7 @@ The text below is scraped from {company}'s official investor relations materials
 
 Respond with valid JSON only. No markdown, no preamble. Be thorough and precise — shallow or number-free outputs are not acceptable."""
 
-        return await self._call_with_retry(prompt, max_tokens=6000)
+        return await self._call(prompt, max_tokens=6000, model=model, provider=provider, openrouter_api_key=openrouter_api_key)
 
 
 # Module-level singleton

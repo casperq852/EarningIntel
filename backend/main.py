@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import engine
-from routers import calendar, chat, companies, documents, earnings, onboard, synthesise, watchlist
+from routers import calendar, chat, companies, documents, earnings, onboard, settings, synthesise, watchlist
 
 
 @asynccontextmanager
@@ -46,6 +46,7 @@ app.include_router(watchlist.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(onboard.router)
+app.include_router(settings.router)
 
 
 @app.get("/health", tags=["health"])

@@ -20,6 +20,7 @@ from decimal import Decimal
 from db import get_db
 from models.schemas import PostBriefResponse, PreBriefResponse
 from services.claude import claude_service
+from routers.settings import get_settings_from_db
 
 
 def _to_float(v: Any) -> Any:
@@ -181,6 +182,7 @@ async def synthesise_post_brief(ticker: str, db: AsyncSession = Depends(get_db))
         "segment_breakdown": pb.get("segment_breakdown"),
     }
 
+    cfg = await get_settings_from_db(db)
     try:
         brief_data = await claude_service.generate_post_brief(
             company=company["name"],
@@ -195,6 +197,9 @@ async def synthesise_post_brief(ticker: str, db: AsyncSession = Depends(get_db))
             transcript_chunks=None,
             custom_kpi_list=custom_kpis,
             existing_context=existing_context,
+            model=cfg["synthesis_model"],
+            provider=cfg["synthesis_provider"],
+            openrouter_api_key=cfg.get("openrouter_api_key"),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Claude synthesis error: {e}")
@@ -321,6 +326,7 @@ async def synthesise_pre_brief(ticker: str, db: AsyncSession = Depends(get_db)):
         pb0 = (history[1].get("post_brief") or {}) if len(history) > 1 else {}
         prior_guidance = pb0.get("guidance_detail") or pb0.get("post_brief")
 
+    cfg = await get_settings_from_db(db)
     try:
         brief_data = await claude_service.generate_pre_brief(
             company=company["name"],
@@ -333,6 +339,9 @@ async def synthesise_pre_brief(ticker: str, db: AsyncSession = Depends(get_db)):
             custom_kpi_list=custom_kpis,
             ebit_est=ebit_est,
             company_overview=company.get("overview"),
+            model=cfg["synthesis_model"],
+            provider=cfg["synthesis_provider"],
+            openrouter_api_key=cfg.get("openrouter_api_key"),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Claude synthesis error: {e}")
@@ -409,12 +418,16 @@ async def synthesise_from_saved_docs(
     ]
     combined_text = combine_doc_texts(fake_docs)
 
+    cfg = await get_settings_from_db(db)
     try:
         brief_data = await claude_service.extract_from_ir_page(
             company=company["name"],
             fiscal_period=period,
             page_text=combined_text,
             custom_kpi_list=custom_kpis,
+            model=cfg["synthesis_model"],
+            provider=cfg["synthesis_provider"],
+            openrouter_api_key=cfg.get("openrouter_api_key"),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Claude synthesis error: {e}")

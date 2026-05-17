@@ -15,8 +15,6 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-import anthropic
-
 MODEL = "claude-sonnet-4-20250514"
 
 _SYSTEM = """You are a financial data extraction specialist. You receive the raw cell content
@@ -125,15 +123,20 @@ def _excel_to_text(content_bytes: bytes, max_chars: int = 45_000) -> str:
 
 
 async def parse_bloomberg_model(
-    client: anthropic.AsyncAnthropic,
     content_bytes: bytes,
     filename: str,
+    *,
+    model: str = MODEL,
+    provider: str = "anthropic",
+    openrouter_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Parse a Bloomberg aggregate analyst model Excel file.
     Returns dict with 'company_name', 'currency', and 'quarters' list.
     Each quarter has is_estimate flag, financials, and optional segment_breakdown.
     """
+    from services.llm import call_llm
+
     excel_text = _excel_to_text(content_bytes)
 
     prompt = f"""Parse this Bloomberg analyst model export and extract all quarterly data.
@@ -152,14 +155,11 @@ File content:
 Return JSON matching exactly this schema (include ALL quarters found):
 {_SCHEMA}"""
 
-    response = await client.messages.create(
-        model=MODEL,
+    return await call_llm(
+        _SYSTEM,
+        prompt,
+        provider=provider,
+        model=model,
+        openrouter_api_key=openrouter_api_key,
         max_tokens=6000,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
     )
-
-    raw = "".join(b.text for b in response.content if hasattr(b, "text"))
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.I)
-    raw = re.sub(r"\s*```$", "", raw.strip())
-    return json.loads(raw)

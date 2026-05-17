@@ -7,13 +7,13 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-import anthropic
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_db
 from models.schemas import Company, CompanyCreate, CompanyUpdate, MessageResponse
+from routers.settings import get_settings_from_db
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -239,10 +239,6 @@ async def upload_analyst_model(
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Please upload an .xlsx file exported from Bloomberg.")
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
-
     result = await db.execute(
         text("SELECT name FROM companies WHERE ticker = :t"),
         {"t": ticker.upper()},
@@ -255,11 +251,17 @@ async def upload_analyst_model(
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
 
+    cfg = await get_settings_from_db(db)
     from services.model_parser import parse_bloomberg_model
-    anthro = anthropic.AsyncAnthropic(api_key=api_key)
 
     try:
-        parsed = await parse_bloomberg_model(anthro, content, file.filename)
+        parsed = await parse_bloomberg_model(
+            content,
+            file.filename,
+            model=cfg["parser_model"],
+            provider=cfg["parser_provider"],
+            openrouter_api_key=cfg.get("openrouter_api_key"),
+        )
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse file: {e}")
 

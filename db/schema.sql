@@ -96,3 +96,11 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_ticker ON documents(ticker);
 CREATE INDEX IF NOT EXISTS idx_documents_ticker_period ON documents(ticker, fiscal_period);
+
+-- Application settings table (single-row config for LLM model selection etc.)
+CREATE TABLE IF NOT EXISTS app_settings (
+    id          INTEGER PRIMARY KEY DEFAULT 1,
+    config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT app_settings_single_row CHECK (id = 1)
+);

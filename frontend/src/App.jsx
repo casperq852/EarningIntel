@@ -6,6 +6,7 @@ import CompanyDetail from './pages/CompanyDetail'
 import EarningsDetail from './pages/EarningsDetail'
 import AddCompany from './pages/AddCompany'
 import Watchlist from './pages/Watchlist'
+import Settings from './pages/Settings'
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/companies/:ticker" element={<CompanyDetail />} />
           <Route path="/earnings/:ticker/:period" element={<EarningsDetail />} />
           <Route path="/watchlist" element={<Watchlist />} />
+          <Route path="/settings" element={<Settings />} />
           <Route
             path="*"
             element={

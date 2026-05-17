@@ -89,6 +89,16 @@ export const getChatSuggestions = (ticker, period) =>
 export const getBaseURL = () => client.defaults.baseURL
 
 // ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export const getSettings = () =>
+  client.get('/settings').then((r) => r.data)
+
+export const updateSettings = (payload) =>
+  client.put('/settings', payload).then((r) => r.data)
+
+// ---------------------------------------------------------------------------
 // Watchlist
 // ---------------------------------------------------------------------------
 

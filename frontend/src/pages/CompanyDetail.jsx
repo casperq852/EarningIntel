@@ -45,6 +45,23 @@ function ToneBadge({ value, type }) {
 }
 
 // ---------------------------------------------------------------------------
+// Period sort helper (used by WorkflowGuide and FinancialChart)
+// ---------------------------------------------------------------------------
+
+function sortedByPeriod(arr) {
+  return [...arr].sort((a, b) => {
+    const parse = (fp) => {
+      if (!fp) return [0, 0]
+      const [q, y] = fp.split('-')
+      return [parseInt(y) || 0, parseInt((q || '').replace('Q', '')) || 0]
+    }
+    const [ya, qa] = parse(a.fiscal_period)
+    const [yb, qb] = parse(b.fiscal_period)
+    return ya !== yb ? ya - yb : qa - qb
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Workflow guide — 3-step onboarding checklist
 // ---------------------------------------------------------------------------
 
@@ -65,8 +82,28 @@ function StepIcon({ num, done }) {
 
 function WorkflowGuide({ company, earnings, onGenerateBrief, synthLoading }) {
   const step1Done = Boolean(company.ir_url) || (company.custom_kpis?.length > 0)
-  const step2Done = earnings.some((e) => e.revenue_actual != null || e.revenue_est != null)
-  const step3Done = earnings.some((e) => e.post_brief?.post_brief != null)
+
+  // Find the most recently ended quarter to detect when new data is needed
+  const today = new Date()
+  const sorted = sortedByPeriod(earnings)
+  const pastPeriods = sorted.filter((e) => {
+    if (e.report_date) return new Date(e.report_date) <= today
+    if (!e.fiscal_period) return false
+    const [q, y] = e.fiscal_period.split('-')
+    const qNum = parseInt((q || '').replace('Q', '')) || 0
+    const endDate = new Date(parseInt(y) || 0, qNum * 3, 1)
+    return endDate <= today
+  })
+  const latestPast = pastPeriods[pastPeriods.length - 1]
+
+  const hasAnyData = earnings.some((e) => e.revenue_actual != null || e.revenue_est != null)
+  const latestPastHasData = !latestPast || latestPast.revenue_actual != null || latestPast.revenue_est != null
+  const step2Done = hasAnyData && latestPastHasData
+
+  const hasAnyBrief = earnings.some((e) => e.post_brief?.post_brief != null)
+  const latestPastHasBrief = !latestPast || latestPast.post_brief?.post_brief != null
+  const step3Done = hasAnyBrief && latestPastHasBrief
+
   const allDone = step1Done && step2Done && step3Done
 
   if (allDone) return null
@@ -253,19 +290,6 @@ const FINANCIAL_METRICS = [
     fmt: _fmtMoney,
   },
 ]
-
-function sortedByPeriod(arr) {
-  return [...arr].sort((a, b) => {
-    const parse = (fp) => {
-      if (!fp) return [0, 0]
-      const [q, y] = fp.split('-')
-      return [parseInt(y) || 0, parseInt((q || '').replace('Q', '')) || 0]
-    }
-    const [ya, qa] = parse(a.fiscal_period)
-    const [yb, qb] = parse(b.fiscal_period)
-    return ya !== yb ? ya - yb : qa - qb
-  })
-}
 
 function FinancialChart({ earnings }) {
   const sorted = sortedByPeriod(earnings)
