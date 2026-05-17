@@ -45,6 +45,125 @@ function ToneBadge({ value, type }) {
 }
 
 // ---------------------------------------------------------------------------
+// Workflow guide — 3-step onboarding checklist
+// ---------------------------------------------------------------------------
+
+function StepIcon({ num, done }) {
+  if (done) {
+    return (
+      <span className="flex items-center justify-center w-7 h-7 rounded-full bg-emerald-500 text-white text-xs font-bold shrink-0">
+        ✓
+      </span>
+    )
+  }
+  return (
+    <span className="flex items-center justify-center w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold shrink-0">
+      {num}
+    </span>
+  )
+}
+
+function WorkflowGuide({ company, earnings, onGenerateBrief, synthLoading }) {
+  const step1Done = Boolean(company.ir_url) || (company.custom_kpis?.length > 0)
+  const step2Done = earnings.some((e) => e.revenue_actual != null || e.revenue_est != null)
+  const step3Done = earnings.some((e) => e.post_brief?.post_brief != null)
+  const allDone = step1Done && step2Done && step3Done
+
+  if (allDone) return null
+
+  const steps = [
+    {
+      num: 1,
+      title: 'Research Company',
+      desc: 'Find the IR website, identify sector KPIs, and capture qualitative earnings context.',
+      done: step1Done,
+      anchor: '#research-panel',
+      actionLabel: 'Run Research →',
+    },
+    {
+      num: 2,
+      title: 'Upload Bloomberg Model',
+      desc: 'Upload the aggregate analyst .xlsx to populate revenue, EBIT, and EPS data.',
+      done: step2Done,
+      anchor: '#bloomberg-upload',
+      actionLabel: 'Upload .xlsx →',
+    },
+    {
+      num: 3,
+      title: 'Generate Brief',
+      desc: 'Claude synthesises a PM-ready post-earnings brief from all available data.',
+      done: step3Done,
+      onClick: onGenerateBrief,
+      actionLabel: synthLoading === 'post' ? 'Generating…' : 'Generate Post-Brief →',
+      disabled: (!step1Done && !step2Done) || synthLoading === 'post',
+    },
+  ]
+
+  const completedCount = steps.filter((s) => s.done).length
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-800">Setup Progress</h2>
+          <p className="text-xs text-gray-400 mt-0.5">{completedCount} of 3 steps complete</p>
+        </div>
+        <div className="flex gap-1">
+          {steps.map((s) => (
+            <div
+              key={s.num}
+              className={`h-1.5 w-10 rounded-full transition-colors ${s.done ? 'bg-emerald-400' : 'bg-gray-100'}`}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {steps.map((step) => (
+          <div
+            key={step.num}
+            className={`relative rounded-lg p-4 border transition-colors ${
+              step.done
+                ? 'bg-emerald-50 border-emerald-100'
+                : 'bg-gray-50 border-gray-100'
+            }`}
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <StepIcon num={step.num} done={step.done} />
+              <div>
+                <div className={`text-sm font-semibold ${step.done ? 'text-emerald-800' : 'text-gray-800'}`}>
+                  {step.title}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5 leading-relaxed">{step.desc}</div>
+              </div>
+            </div>
+
+            {step.done ? (
+              <div className="text-xs text-emerald-600 font-medium mt-1 pl-10">Complete</div>
+            ) : step.onClick ? (
+              <button
+                onClick={step.onClick}
+                disabled={step.disabled}
+                className="ml-10 mt-1 text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {step.actionLabel}
+              </button>
+            ) : (
+              <a
+                href={step.anchor}
+                className="block ml-10 mt-1 text-xs font-semibold text-indigo-600 hover:text-indigo-800"
+              >
+                {step.actionLabel}
+              </a>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Research (onboarding) panel — streams live Claude agent progress
 // ---------------------------------------------------------------------------
 
@@ -705,16 +824,6 @@ export default function CompanyDetail() {
   const latestEarnings = earnings[0]
   const latestBrief = latestEarnings?.post_brief || latestEarnings?.pre_brief
 
-  // Bloomberg banner logic
-  const hasAnyActuals = earnings.some((e) => e.revenue_actual != null)
-  const today = new Date()
-  const pastEarnings = earnings.filter((e) => {
-    if (!e.report_date) return false
-    return new Date(e.report_date) <= today
-  })
-  const latestPastMissingActuals = pastEarnings.length > 0 && pastEarnings[0].revenue_actual == null
-  const showBloombergBanner = !hasAnyActuals || latestPastMissingActuals
-
   const refreshAll = () => {
     Promise.all([getCompany(ticker), getEarnings(ticker)]).then(([co, earn]) => {
       setCompany(co)
@@ -773,41 +882,26 @@ export default function CompanyDetail() {
         </div>
       )}
 
-      {/* Bloomberg data banner */}
-      {showBloombergBanner && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="text-amber-500 text-xl flex-shrink-0">⚠</span>
-            <div>
-              <div className="text-sm font-semibold text-amber-800">
-                {!hasAnyActuals
-                  ? 'Financial data not yet uploaded'
-                  : 'New earnings available — upload updated model'}
-              </div>
-              <div className="text-xs text-amber-600 mt-0.5">
-                Upload the Bloomberg aggregate analyst model (.xlsx) to populate quarterly revenue, EBIT, EPS estimates and actuals.
-              </div>
-            </div>
-          </div>
-          <a
-            href="#bloomberg-upload"
-            className="shrink-0 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg transition-colors"
-          >
-            Upload model ↓
-          </a>
-        </div>
-      )}
+      {/* Workflow guide — hidden once all 3 steps complete */}
+      <WorkflowGuide
+        company={company}
+        earnings={earnings}
+        onGenerateBrief={() => handleSynth('post')}
+        synthLoading={synthLoading}
+      />
 
-      {/* Alphie Analyst Research */}
-      <AlphieResearch ticker={ticker} />
+      {/* Step 1 — Research Company */}
+      <div id="research-panel">
+        <ResearchPanel ticker={ticker} onDone={refreshAll} />
+      </div>
 
-      {/* Research Panel */}
-      <ResearchPanel ticker={ticker} onDone={refreshAll} />
-
-      {/* Bloomberg Model Upload */}
+      {/* Step 2 — Bloomberg Model Upload */}
       <div id="bloomberg-upload">
         <BloombergModelUpload ticker={ticker} onDone={refreshAll} />
       </div>
+
+      {/* Alphie Analyst Research (optional, anytime) */}
+      <AlphieResearch ticker={ticker} />
 
       {/* Financial Trends chart — only when Bloomberg data is present */}
       <FinancialChart earnings={earnings} />
